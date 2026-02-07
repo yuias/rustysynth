@@ -25,6 +25,7 @@ pub struct Channel {
     chorus_send: u8,
 
     rpn: i16,
+    nrpn: i16,
     pitch_bend_range: i16,
     coarse_tune: i16,
     fine_tune: i16,
@@ -46,6 +47,12 @@ pub struct Channel {
     attack_time: u8,      // CC#73
     brightness: u8,       // CC#74
     decay_time: u8,       // CC#75
+
+    // NRPN vibrato parameters (GS/XG)
+    // Stored as raw 0-127 values, 64 = no change
+    vibrato_rate: u8,  // NRPN MSB=1, LSB=8
+    vibrato_depth: u8, // NRPN MSB=1, LSB=9
+    vibrato_delay: u8, // NRPN MSB=1, LSB=10
 }
 
 impl Channel {
@@ -62,6 +69,7 @@ impl Channel {
             reverb_send: 0,
             chorus_send: 0,
             rpn: 0,
+            nrpn: -1,
             pitch_bend_range: 0,
             coarse_tune: 0,
             fine_tune: 0,
@@ -76,6 +84,9 @@ impl Channel {
             attack_time: 64,
             brightness: 64,
             decay_time: 64,
+            vibrato_rate: 64,
+            vibrato_depth: 64,
+            vibrato_delay: 64,
         };
 
         channel.reset();
@@ -112,6 +123,10 @@ impl Channel {
         self.attack_time = 64;
         self.brightness = 64;
         self.decay_time = 64;
+        self.nrpn = -1;
+        self.vibrato_rate = 64;
+        self.vibrato_depth = 64;
+        self.vibrato_delay = 64;
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
@@ -193,37 +208,74 @@ impl Channel {
         self.last_data_type = DataType::Rpn;
     }
 
-    pub(crate) fn set_nrpn_coarse(&mut self, _value: i32) {
+    pub(crate) fn set_nrpn_coarse(&mut self, value: i32) {
+        self.nrpn = (self.nrpn & 0x7F) | (value << 7) as i16;
         self.last_data_type = DataType::Nrpn;
     }
 
-    pub(crate) fn set_nrpn_fine(&mut self, _value: i32) {
+    pub(crate) fn set_nrpn_fine(&mut self, value: i32) {
+        self.nrpn = (((self.nrpn as i32) & 0xFF80) | value) as i16;
         self.last_data_type = DataType::Nrpn;
     }
 
     pub(crate) fn data_entry_coarse(&mut self, value: i32) {
-        if self.last_data_type != DataType::Rpn {
-            return;
-        }
-
-        if self.rpn == 0 {
-            self.pitch_bend_range = (self.pitch_bend_range & 0x7F) | (value << 7) as i16;
-        } else if self.rpn == 1 {
-            self.fine_tune = (self.fine_tune & 0x7F) | (value << 7) as i16;
-        } else if self.rpn == 2 {
-            self.coarse_tune = (value - 64) as i16;
+        match self.last_data_type {
+            DataType::Rpn => {
+                if self.rpn == 0 {
+                    self.pitch_bend_range =
+                        (self.pitch_bend_range & 0x7F) | (value << 7) as i16;
+                } else if self.rpn == 1 {
+                    self.fine_tune = (self.fine_tune & 0x7F) | (value << 7) as i16;
+                } else if self.rpn == 2 {
+                    self.coarse_tune = (value - 64) as i16;
+                }
+            }
+            DataType::Nrpn => {
+                self.nrpn_data_entry_coarse(value);
+            }
+            DataType::None => {}
         }
     }
 
     pub(crate) fn data_entry_fine(&mut self, value: i32) {
-        if self.last_data_type != DataType::Rpn {
-            return;
+        match self.last_data_type {
+            DataType::Rpn => {
+                if self.rpn == 0 {
+                    self.pitch_bend_range =
+                        (((self.pitch_bend_range as i32) & 0xFF80) | value) as i16;
+                } else if self.rpn == 1 {
+                    self.fine_tune = (((self.fine_tune as i32) & 0xFF80) | value) as i16;
+                }
+            }
+            DataType::Nrpn => {
+                // NRPN fine data entry is not used for GS/XG tone parameters
+            }
+            DataType::None => {}
         }
+    }
 
-        if self.rpn == 0 {
-            self.pitch_bend_range = (((self.pitch_bend_range as i32) & 0xFF80) | value) as i16;
-        } else if self.rpn == 1 {
-            self.fine_tune = (((self.fine_tune as i32) & 0xFF80) | value) as i16;
+    // NRPN MSB=1: GS/XG tone modify parameters
+    // Address = (MSB << 7) | LSB
+    const NRPN_VIBRATO_RATE: i16 = (1 << 7) | 8;     // MSB=1, LSB=8
+    const NRPN_VIBRATO_DEPTH: i16 = (1 << 7) | 9;    // MSB=1, LSB=9
+    const NRPN_VIBRATO_DELAY: i16 = (1 << 7) | 10;   // MSB=1, LSB=10
+    const NRPN_TVF_CUTOFF: i16 = (1 << 7) | 32;      // MSB=1, LSB=32
+    const NRPN_TVF_RESONANCE: i16 = (1 << 7) | 33;   // MSB=1, LSB=33
+    const NRPN_TVA_ATTACK: i16 = (1 << 7) | 99;      // MSB=1, LSB=99
+    const NRPN_TVA_DECAY: i16 = (1 << 7) | 100;      // MSB=1, LSB=100
+    const NRPN_TVA_RELEASE: i16 = (1 << 7) | 102;    // MSB=1, LSB=102
+
+    fn nrpn_data_entry_coarse(&mut self, value: i32) {
+        match self.nrpn {
+            Self::NRPN_VIBRATO_RATE => self.vibrato_rate = value as u8,
+            Self::NRPN_VIBRATO_DEPTH => self.vibrato_depth = value as u8,
+            Self::NRPN_VIBRATO_DELAY => self.vibrato_delay = value as u8,
+            Self::NRPN_TVF_CUTOFF => self.brightness = value as u8,
+            Self::NRPN_TVF_RESONANCE => self.filter_resonance = value as u8,
+            Self::NRPN_TVA_ATTACK => self.attack_time = value as u8,
+            Self::NRPN_TVA_DECAY => self.decay_time = value as u8,
+            Self::NRPN_TVA_RELEASE => self.release_time = value as u8,
+            _ => {}
         }
     }
 
@@ -437,6 +489,52 @@ impl Channel {
             1.0
         } else {
             let timecents = (self.release_time as f32 - 64.0) * 50.0;
+            2_f32.powf(timecents / 1200.0)
+        }
+    }
+
+    // NRPN vibrato getters (raw)
+    pub fn get_vibrato_rate_raw(&self) -> u8 {
+        self.vibrato_rate
+    }
+
+    pub fn get_vibrato_depth_raw(&self) -> u8 {
+        self.vibrato_depth
+    }
+
+    pub fn get_vibrato_delay_raw(&self) -> u8 {
+        self.vibrato_delay
+    }
+
+    /// Returns the vibrato rate multiplier.
+    /// 64 = 1.0 (no change). Each unit = ~50 timecents.
+    pub(crate) fn get_vibrato_rate_multiplier(&self) -> f32 {
+        if self.vibrato_rate == 64 {
+            1.0
+        } else {
+            let timecents = (self.vibrato_rate as f32 - 64.0) * 50.0;
+            2_f32.powf(timecents / 1200.0)
+        }
+    }
+
+    /// Returns the vibrato depth multiplier.
+    /// 64 = 1.0 (no change). Each unit scales the depth linearly.
+    pub(crate) fn get_vibrato_depth_multiplier(&self) -> f32 {
+        if self.vibrato_depth == 64 {
+            1.0
+        } else {
+            // Linear scaling: 0 = 0x, 64 = 1x, 127 = ~2x
+            self.vibrato_depth as f32 / 64.0
+        }
+    }
+
+    /// Returns the vibrato delay multiplier.
+    /// 64 = 1.0 (no change). Each unit = ~50 timecents.
+    pub(crate) fn get_vibrato_delay_multiplier(&self) -> f32 {
+        if self.vibrato_delay == 64 {
+            1.0
+        } else {
+            let timecents = (self.vibrato_delay as f32 - 64.0) * 50.0;
             2_f32.powf(timecents / 1200.0)
         }
     }
