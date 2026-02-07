@@ -112,6 +112,22 @@ impl Chorus {
         }
     }
 
+    pub(crate) fn set_params(&mut self, sample_rate: i32, delay: f64, depth: f64, frequency: f64) {
+        self.buffer_l = vec![0_f32; ((sample_rate as f64) * (delay + depth)) as usize + 2];
+        self.buffer_r = vec![0_f32; ((sample_rate as f64) * (delay + depth)) as usize + 2];
+
+        self.delay_table = vec![0_f32; ((sample_rate as f64) / frequency).round() as usize];
+        let delay_table_length = self.delay_table.len();
+        for (t, input) in self.delay_table.iter_mut().enumerate().take(delay_table_length) {
+            let phase = 2.0 * consts::PI * (t as f64) / (delay_table_length as f64);
+            *input = ((sample_rate as f64) * (delay + depth * phase.sin())) as f32;
+        }
+
+        self.buffer_index = 0;
+        self.delay_table_index_l = 0;
+        self.delay_table_index_r = delay_table_length / 4;
+    }
+
     pub(crate) fn mute(&mut self) {
         let buffer_length = self.buffer_l.len();
 

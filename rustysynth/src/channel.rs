@@ -9,7 +9,7 @@ enum DataType {
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub(crate) struct Channel {
+pub struct Channel {
     pub(crate) is_percussion_channel: bool,
 
     bank_number: i32,
@@ -32,6 +32,12 @@ pub(crate) struct Channel {
     pitch_bend: f32,
 
     last_data_type: DataType,
+
+    // Phase 2: Additional CC fields
+    bank_lsb: i32,
+    sostenuto_pedal: bool,
+    soft_pedal: bool,
+    variation_send: u8,
 }
 
 impl Channel {
@@ -53,6 +59,10 @@ impl Channel {
             fine_tune: 0,
             pitch_bend: 0_f32,
             last_data_type: DataType::None,
+            bank_lsb: 0,
+            sostenuto_pedal: false,
+            soft_pedal: false,
+            variation_send: 0,
         };
 
         channel.reset();
@@ -79,6 +89,11 @@ impl Channel {
         self.fine_tune = 8192;
 
         self.pitch_bend = 0_f32;
+
+        self.bank_lsb = 0;
+        self.sostenuto_pedal = false;
+        self.soft_pedal = false;
+        self.variation_send = 0;
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
@@ -89,6 +104,9 @@ impl Channel {
         self.rpn = -1;
 
         self.pitch_bend = 0_f32;
+
+        self.sostenuto_pedal = false;
+        self.soft_pedal = false;
     }
 
     pub(crate) fn set_bank(&mut self, value: i32) {
@@ -195,51 +213,115 @@ impl Channel {
         self.pitch_bend = (1_f32 / 8192_f32) * ((value1 | (value2 << 7)) - 8192) as f32;
     }
 
-    pub(crate) fn get_bank_number(&self) -> i32 {
+    // Phase 2: Additional CC setters
+    pub(crate) fn set_bank_lsb(&mut self, value: i32) {
+        self.bank_lsb = value;
+    }
+
+    pub(crate) fn set_sostenuto_pedal(&mut self, value: i32) {
+        self.sostenuto_pedal = value >= 64;
+    }
+
+    pub(crate) fn set_soft_pedal(&mut self, value: i32) {
+        self.soft_pedal = value >= 64;
+    }
+
+    pub(crate) fn set_variation_send(&mut self, value: i32) {
+        self.variation_send = value as u8;
+    }
+
+    // Public getters (normalized values)
+    pub fn get_bank_number(&self) -> i32 {
         self.bank_number
     }
 
-    pub(crate) fn get_patch_number(&self) -> i32 {
+    pub fn get_patch_number(&self) -> i32 {
         self.patch_number
     }
 
-    pub(crate) fn get_modulation(&self) -> f32 {
+    pub fn get_modulation(&self) -> f32 {
         (50_f32 / 16383_f32) * self.modulation as f32
     }
 
-    pub(crate) fn get_volume(&self) -> f32 {
+    pub fn get_volume(&self) -> f32 {
         (1_f32 / 16383_f32) * self.volume as f32
     }
 
-    pub(crate) fn get_pan(&self) -> f32 {
+    pub fn get_pan(&self) -> f32 {
         (100_f32 / 16383_f32) * self.pan as f32 - 50_f32
     }
 
-    pub(crate) fn get_expression(&self) -> f32 {
+    pub fn get_expression(&self) -> f32 {
         (1_f32 / 16383_f32) * self.expression as f32
     }
 
-    pub(crate) fn get_hold_pedal(&self) -> bool {
+    pub fn get_hold_pedal(&self) -> bool {
         self.hold_pedal
     }
 
-    pub(crate) fn get_reverb_send(&self) -> f32 {
+    pub fn get_reverb_send(&self) -> f32 {
         (1_f32 / 127_f32) * self.reverb_send as f32
     }
 
-    pub(crate) fn get_chorus_send(&self) -> f32 {
+    pub fn get_chorus_send(&self) -> f32 {
         (1_f32 / 127_f32) * self.chorus_send as f32
     }
 
-    pub(crate) fn get_pitch_bend_range(&self) -> f32 {
+    pub fn get_pitch_bend_range(&self) -> f32 {
         (self.pitch_bend_range >> 7) as f32 + 0.01_f32 * (self.pitch_bend_range & 0x7F) as f32
     }
 
-    pub(crate) fn get_tune(&self) -> f32 {
+    pub fn get_tune(&self) -> f32 {
         self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
     }
 
-    pub(crate) fn get_pitch_bend(&self) -> f32 {
+    pub fn get_pitch_bend(&self) -> f32 {
         self.get_pitch_bend_range() * self.pitch_bend
+    }
+
+    // Raw getters (0-127 range for UI display)
+    pub fn get_volume_raw(&self) -> u8 {
+        (self.volume >> 7) as u8
+    }
+
+    pub fn get_pan_raw(&self) -> u8 {
+        (self.pan >> 7) as u8
+    }
+
+    pub fn get_expression_raw(&self) -> u8 {
+        (self.expression >> 7) as u8
+    }
+
+    pub fn get_reverb_send_raw(&self) -> u8 {
+        self.reverb_send
+    }
+
+    pub fn get_chorus_send_raw(&self) -> u8 {
+        self.chorus_send
+    }
+
+    pub fn get_is_percussion_channel(&self) -> bool {
+        self.is_percussion_channel
+    }
+
+    // Phase 2: Additional CC getters
+    pub fn get_bank_lsb(&self) -> i32 {
+        self.bank_lsb
+    }
+
+    pub fn get_sostenuto_pedal(&self) -> bool {
+        self.sostenuto_pedal
+    }
+
+    pub fn get_soft_pedal(&self) -> bool {
+        self.soft_pedal
+    }
+
+    pub fn get_variation_send(&self) -> f32 {
+        (1_f32 / 127_f32) * self.variation_send as f32
+    }
+
+    pub fn get_variation_send_raw(&self) -> u8 {
+        self.variation_send
     }
 }

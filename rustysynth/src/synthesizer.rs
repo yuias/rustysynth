@@ -41,6 +41,8 @@ pub struct Synthesizer {
     master_volume: f32,
 
     effects: Option<Effects>,
+
+    channel_mute: u16,
 }
 
 impl Synthesizer {
@@ -120,6 +122,7 @@ impl Synthesizer {
             block_read,
             master_volume,
             effects,
+            channel_mute: 0,
         })
     }
 
@@ -154,9 +157,13 @@ impl Synthesizer {
                 0x2A => channel_info.set_pan_fine(data2), // Pan Fine
                 0x0B => channel_info.set_expression_coarse(data2), // Expression Coarse
                 0x2B => channel_info.set_expression_fine(data2), // Expression Fine
+                0x20 => channel_info.set_bank_lsb(data2), // Bank Select LSB
                 0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
+                0x42 => channel_info.set_sostenuto_pedal(data2), // Sostenuto
+                0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
                 0x5B => channel_info.set_reverb_send(data2), // Reverb Send
                 0x5D => channel_info.set_chorus_send(data2), // Chorus Send
+                0x5E => channel_info.set_variation_send(data2), // Variation/Effect Depth
                 0x63 => channel_info.set_nrpn_coarse(data2), // NRPN Coarse
                 0x62 => channel_info.set_nrpn_fine(data2), // NRPN Fine
                 0x65 => channel_info.set_rpn_coarse(data2), // RPN Coarse
@@ -359,15 +366,29 @@ impl Synthesizer {
         }
     }
 
+    fn is_voice_muted(&self, voice_channel: i32) -> bool {
+        voice_channel >= 0
+            && (voice_channel as usize) < 16
+            && (self.channel_mute & (1 << voice_channel as usize)) != 0
+    }
+
     fn render_block(&mut self) {
         self.voices
             .process(&self.sound_font.wave_data, &self.channels);
 
+        let channel_mute = self.channel_mute;
+
         self.block_left.fill(0_f32);
         self.block_right.fill(0_f32);
         for voice in self.voices.get_active_voices().iter_mut() {
-            let previous_gain_left = self.master_volume * voice.previous_mix_gain_left;
-            let current_gain_left = self.master_volume * voice.current_mix_gain_left;
+            let muted = voice.channel() >= 0
+                && (voice.channel() as usize) < 16
+                && (channel_mute & (1 << voice.channel() as usize)) != 0;
+
+            let vol = if muted { 0.0 } else { self.master_volume };
+
+            let previous_gain_left = vol * voice.previous_mix_gain_left;
+            let current_gain_left = vol * voice.current_mix_gain_left;
             Synthesizer::write_block(
                 previous_gain_left,
                 current_gain_left,
@@ -375,8 +396,8 @@ impl Synthesizer {
                 &mut self.block_left[..],
                 self.inverse_block_size,
             );
-            let previous_gain_right = self.master_volume * voice.previous_mix_gain_right;
-            let current_gain_right = self.master_volume * voice.current_mix_gain_right;
+            let previous_gain_right = vol * voice.previous_mix_gain_right;
+            let current_gain_right = vol * voice.current_mix_gain_right;
             Synthesizer::write_block(
                 previous_gain_right,
                 current_gain_right,
@@ -395,6 +416,14 @@ impl Synthesizer {
             chorus_input_left.fill(0_f32);
             chorus_input_right.fill(0_f32);
             for voice in self.voices.get_active_voices().iter_mut() {
+                let muted = voice.channel() >= 0
+                    && (voice.channel() as usize) < 16
+                    && (channel_mute & (1 << voice.channel() as usize)) != 0;
+
+                if muted {
+                    continue;
+                }
+
                 let previous_gain_left = voice.previous_chorus_send * voice.previous_mix_gain_left;
                 let current_gain_left = voice.current_chorus_send * voice.current_mix_gain_left;
                 Synthesizer::write_block(
@@ -438,6 +467,14 @@ impl Synthesizer {
             let reverb_output_right = &mut effects.reverb_output_right[..];
             reverb_input.fill(0_f32);
             for voice in self.voices.get_active_voices().iter_mut() {
+                let muted = voice.channel() >= 0
+                    && (voice.channel() as usize) < 16
+                    && (channel_mute & (1 << voice.channel() as usize)) != 0;
+
+                if muted {
+                    continue;
+                }
+
                 let previous_gain = reverb.get_input_gain()
                     * voice.previous_reverb_send
                     * (voice.previous_mix_gain_left + voice.previous_mix_gain_right);
@@ -523,6 +560,76 @@ impl Synthesizer {
     /// * `value` - The new value of the master volume.
     pub fn set_master_volume(&mut self, value: f32) {
         self.master_volume = value;
+    }
+
+    /// Gets a reference to a channel by index.
+    pub fn get_channel(&self, channel: usize) -> Option<&Channel> {
+        self.channels.get(channel)
+    }
+
+    /// Sets the mute state for a specific channel.
+    pub fn set_channel_mute(&mut self, channel: usize, muted: bool) {
+        if channel < 16 {
+            if muted {
+                self.channel_mute |= 1 << channel;
+            } else {
+                self.channel_mute &= !(1 << channel);
+            }
+        }
+    }
+
+    /// Returns whether a specific channel is muted.
+    pub fn is_channel_muted(&self, channel: usize) -> bool {
+        channel < 16 && (self.channel_mute & (1 << channel)) != 0
+    }
+
+    /// Sets the channel mute mask (bitmask, bit 0 = channel 0).
+    pub fn set_channel_mute_mask(&mut self, mask: u16) {
+        self.channel_mute = mask;
+    }
+
+    /// Gets the channel mute mask.
+    pub fn get_channel_mute_mask(&self) -> u16 {
+        self.channel_mute
+    }
+
+    /// Sets the reverb room size (0.0-1.0, default 0.5).
+    pub fn set_reverb_room_size(&mut self, value: f32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.reverb.set_room_size(value);
+        }
+    }
+
+    /// Sets the reverb damping (0.0-1.0, default 0.5).
+    pub fn set_reverb_damp(&mut self, value: f32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.reverb.set_damp(value);
+        }
+    }
+
+    /// Sets the reverb wet level (0.0-1.0, default ~0.33).
+    pub fn set_reverb_wet(&mut self, value: f32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.reverb.set_wet(value);
+        }
+    }
+
+    /// Sets the reverb width (0.0-1.0, default 1.0).
+    pub fn set_reverb_width(&mut self, value: f32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.reverb.set_width(value);
+        }
+    }
+
+    /// Sets the chorus parameters.
+    ///
+    /// Default values: delay=0.002, depth=0.0019, frequency=0.4
+    pub fn set_chorus_params(&mut self, delay: f64, depth: f64, frequency: f64) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects
+                .chorus
+                .set_params(self.sample_rate, delay, depth, frequency);
+        }
     }
 }
 

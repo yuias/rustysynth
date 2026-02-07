@@ -216,22 +216,22 @@ impl Reverb {
         self.gain
     }
 
-    fn set_room_size(&mut self, value: f32) {
+    pub(crate) fn set_room_size(&mut self, value: f32) {
         self.room_size = (value * Reverb::SCALE_ROOM) + Reverb::OFFSET_ROOM;
         self.update();
     }
 
-    fn set_damp(&mut self, value: f32) {
+    pub(crate) fn set_damp(&mut self, value: f32) {
         self.damp = value * Reverb::SCALE_DAMP;
         self.update();
     }
 
-    fn set_wet(&mut self, value: f32) {
+    pub(crate) fn set_wet(&mut self, value: f32) {
         self.wet = value * Reverb::SCALE_WET;
         self.update();
     }
 
-    fn set_width(&mut self, value: f32) {
+    pub(crate) fn set_width(&mut self, value: f32) {
         self.width = value;
         self.update();
     }
