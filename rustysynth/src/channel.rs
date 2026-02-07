@@ -38,6 +38,14 @@ pub struct Channel {
     sostenuto_pedal: bool,
     soft_pedal: bool,
     variation_send: u8,
+
+    // Sound Controller CCs (GM2/GS/XG)
+    // Stored as raw 0-127 values, 64 = no change
+    filter_resonance: u8, // CC#71
+    release_time: u8,     // CC#72
+    attack_time: u8,      // CC#73
+    brightness: u8,       // CC#74
+    decay_time: u8,       // CC#75
 }
 
 impl Channel {
@@ -63,6 +71,11 @@ impl Channel {
             sostenuto_pedal: false,
             soft_pedal: false,
             variation_send: 0,
+            filter_resonance: 64,
+            release_time: 64,
+            attack_time: 64,
+            brightness: 64,
+            decay_time: 64,
         };
 
         channel.reset();
@@ -94,6 +107,11 @@ impl Channel {
         self.sostenuto_pedal = false;
         self.soft_pedal = false;
         self.variation_send = 0;
+        self.filter_resonance = 64;
+        self.release_time = 64;
+        self.attack_time = 64;
+        self.brightness = 64;
+        self.decay_time = 64;
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
@@ -230,6 +248,27 @@ impl Channel {
         self.variation_send = value as u8;
     }
 
+    // Sound Controller CC setters
+    pub(crate) fn set_filter_resonance(&mut self, value: i32) {
+        self.filter_resonance = value as u8;
+    }
+
+    pub(crate) fn set_release_time(&mut self, value: i32) {
+        self.release_time = value as u8;
+    }
+
+    pub(crate) fn set_attack_time(&mut self, value: i32) {
+        self.attack_time = value as u8;
+    }
+
+    pub(crate) fn set_brightness(&mut self, value: i32) {
+        self.brightness = value as u8;
+    }
+
+    pub(crate) fn set_decay_time(&mut self, value: i32) {
+        self.decay_time = value as u8;
+    }
+
     // Public getters (normalized values)
     pub fn get_bank_number(&self) -> i32 {
         self.bank_number
@@ -323,5 +362,82 @@ impl Channel {
 
     pub fn get_variation_send_raw(&self) -> u8 {
         self.variation_send
+    }
+
+    // Sound Controller CC getters
+    /// Returns the filter resonance offset in cents relative to 64.
+    /// Range: 0-127 (64 = no change).
+    pub fn get_filter_resonance_raw(&self) -> u8 {
+        self.filter_resonance
+    }
+
+    /// Returns the release time offset as raw value.
+    /// Range: 0-127 (64 = no change).
+    pub fn get_release_time_raw(&self) -> u8 {
+        self.release_time
+    }
+
+    /// Returns the attack time offset as raw value.
+    /// Range: 0-127 (64 = no change).
+    pub fn get_attack_time_raw(&self) -> u8 {
+        self.attack_time
+    }
+
+    /// Returns the brightness (cutoff) offset as raw value.
+    /// Range: 0-127 (64 = no change).
+    pub fn get_brightness_raw(&self) -> u8 {
+        self.brightness
+    }
+
+    /// Returns the decay time offset as raw value.
+    /// Range: 0-127 (64 = no change).
+    pub fn get_decay_time_raw(&self) -> u8 {
+        self.decay_time
+    }
+
+    /// Returns the brightness offset in cents for filter cutoff.
+    /// 64 = 0 cents (no change), each unit = ~50 cents.
+    pub(crate) fn get_brightness_cents(&self) -> f32 {
+        (self.brightness as f32 - 64.0) * 50.0
+    }
+
+    /// Returns the resonance offset in dB.
+    /// 64 = 0 dB (no change), each unit = ~0.5 dB.
+    pub(crate) fn get_filter_resonance_db(&self) -> f32 {
+        (self.filter_resonance as f32 - 64.0) * 0.5
+    }
+
+    /// Returns the attack time multiplier (timecents-based).
+    /// 64 = 1.0 (no change).
+    pub(crate) fn get_attack_time_multiplier(&self) -> f32 {
+        if self.attack_time == 64 {
+            1.0
+        } else {
+            // Each unit = ~50 timecents offset
+            let timecents = (self.attack_time as f32 - 64.0) * 50.0;
+            2_f32.powf(timecents / 1200.0)
+        }
+    }
+
+    /// Returns the decay time multiplier (timecents-based).
+    /// 64 = 1.0 (no change).
+    pub(crate) fn get_decay_time_multiplier(&self) -> f32 {
+        if self.decay_time == 64 {
+            1.0
+        } else {
+            let timecents = (self.decay_time as f32 - 64.0) * 50.0;
+            2_f32.powf(timecents / 1200.0)
+        }
+    }
+
+    /// Returns the release time multiplier (timecents-based).
+    /// 64 = 1.0 (no change).
+    pub(crate) fn get_release_time_multiplier(&self) -> f32 {
+        if self.release_time == 64 {
+            1.0
+        } else {
+            let timecents = (self.release_time as f32 - 64.0) * 50.0;
+            2_f32.powf(timecents / 1200.0)
+        }
     }
 }

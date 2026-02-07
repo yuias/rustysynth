@@ -215,19 +215,39 @@ impl Voice {
             return false;
         }
 
-        if self.dynamic_cutoff {
-            let cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
-                + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
-            let factor = SoundFontMath::cents_to_multiplying_factor(cents);
-            let new_cutoff = factor * self.cutoff;
+        {
+            // Apply CC#74 (Brightness) as cutoff offset in cents
+            let brightness_cents = channel_info.get_brightness_cents();
+            // Apply CC#71 (Resonance) as resonance offset in dB
+            let resonance_db = channel_info.get_filter_resonance_db();
 
-            // The cutoff change is limited within x0.5 and x2 to reduce pop noise.
-            let lower_limit = 0.5_f32 * self.smoothed_cutoff;
-            let upper_limit = 2_f32 * self.smoothed_cutoff;
-            self.smoothed_cutoff = SoundFontMath::clamp(new_cutoff, lower_limit, upper_limit);
+            let effective_resonance = if resonance_db != 0.0 {
+                SoundFontMath::max(
+                    self.resonance * SoundFontMath::decibels_to_linear(resonance_db),
+                    0.001,
+                )
+            } else {
+                self.resonance
+            };
 
-            self.filter
-                .set_low_pass_filter(self.smoothed_cutoff, self.resonance);
+            if self.dynamic_cutoff || brightness_cents != 0.0 {
+                let mod_cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
+                    + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
+                let total_cents = mod_cents + brightness_cents;
+                let factor = SoundFontMath::cents_to_multiplying_factor(total_cents);
+                let new_cutoff = factor * self.cutoff;
+
+                // The cutoff change is limited within x0.5 and x2 to reduce pop noise.
+                let lower_limit = 0.5_f32 * self.smoothed_cutoff;
+                let upper_limit = 2_f32 * self.smoothed_cutoff;
+                self.smoothed_cutoff = SoundFontMath::clamp(new_cutoff, lower_limit, upper_limit);
+
+                self.filter
+                    .set_low_pass_filter(self.smoothed_cutoff, effective_resonance);
+            } else if resonance_db != 0.0 {
+                self.filter
+                    .set_low_pass_filter(self.cutoff, effective_resonance);
+            }
         }
         self.filter.process(&mut self.block[..]);
 

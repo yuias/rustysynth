@@ -161,6 +161,11 @@ impl Synthesizer {
                 0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
                 0x42 => channel_info.set_sostenuto_pedal(data2), // Sostenuto
                 0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
+                0x47 => channel_info.set_filter_resonance(data2), // Filter Resonance (CC#71)
+                0x48 => channel_info.set_release_time(data2), // Release Time (CC#72)
+                0x49 => channel_info.set_attack_time(data2), // Attack Time (CC#73)
+                0x4A => channel_info.set_brightness(data2), // Brightness (CC#74)
+                0x4B => channel_info.set_decay_time(data2), // Decay Time (CC#75)
                 0x5B => channel_info.set_reverb_send(data2), // Reverb Send
                 0x5D => channel_info.set_chorus_send(data2), // Chorus Send
                 0x5E => channel_info.set_variation_send(data2), // Variation/Effect Depth
