@@ -149,7 +149,8 @@ impl Voice {
         self.cutoff = region.get_initial_filter_cutoff_frequency();
         self.resonance = SoundFontMath::decibels_to_linear(region.get_initial_filter_q());
 
-        self.vib_lfo_to_pitch = 0.01_f32 * region.get_vibrato_lfo_to_pitch() as f32;
+        self.vib_lfo_to_pitch = 0.01_f32 * region.get_vibrato_lfo_to_pitch() as f32
+            * channel_info.get_vibrato_depth_multiplier();
         self.mod_lfo_to_pitch = 0.01_f32 * region.get_modulation_lfo_to_pitch() as f32;
         self.mod_env_to_pitch = 0.01_f32 * region.get_modulation_envelope_to_pitch() as f32;
 
@@ -166,7 +167,7 @@ impl Voice {
 
         RegionEx::start_volume_envelope(&mut self.vol_env, region, channel_info, key, velocity);
         RegionEx::start_modulation_envelope(&mut self.mod_env, region, key, velocity);
-        RegionEx::start_vibrato(&mut self.vib_lfo, region, key, velocity);
+        RegionEx::start_vibrato(&mut self.vib_lfo, region, channel_info, key, velocity);
         RegionEx::start_modulation(&mut self.mod_lfo, region, key, velocity);
         RegionEx::start_oscillator(&mut self.oscillator, region);
         self.filter.clear_buffer();

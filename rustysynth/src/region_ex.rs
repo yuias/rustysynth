@@ -97,11 +97,10 @@ impl RegionEx {
         envelope.start(delay, attack, hold, decay, sustain, release);
     }
 
-    pub(crate) fn start_vibrato(lfo: &mut Lfo, region: &RegionPair, _key: i32, _velocity: i32) {
-        lfo.start(
-            region.get_delay_vibrato_lfo(),
-            region.get_frequency_vibrato_lfo(),
-        );
+    pub(crate) fn start_vibrato(lfo: &mut Lfo, region: &RegionPair, channel_info: &Channel, _key: i32, _velocity: i32) {
+        let delay = region.get_delay_vibrato_lfo() * channel_info.get_vibrato_delay_multiplier();
+        let frequency = region.get_frequency_vibrato_lfo() * channel_info.get_vibrato_rate_multiplier();
+        lfo.start(delay, frequency);
     }
 
     pub(crate) fn start_modulation(lfo: &mut Lfo, region: &RegionPair, _key: i32, _velocity: i32) {
