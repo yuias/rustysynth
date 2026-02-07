@@ -78,6 +78,10 @@ pub(crate) struct Voice {
     // This is used to smooth out the cutoff frequency.
     smoothed_cutoff: f32,
 
+    // Portamento: pitch offset that decays towards 0
+    portamento_offset: f32,    // current pitch offset in semitones
+    portamento_speed: f32,     // semitones per sample (0 = no portamento)
+
     voice_state: VoiceState,
     /// Time elapsed in samples
     voice_length: usize,
@@ -121,13 +125,16 @@ impl Voice {
             instrument_reverb: 0_f32,
             instrument_chorus: 0_f32,
             smoothed_cutoff: 0_f32,
+            portamento_offset: 0_f32,
+            portamento_speed: 0_f32,
             voice_state: VoiceState::Playing,
             voice_length: 0,
             min_voice_length: (settings.sample_rate / 500) as usize,
         }
     }
 
-    pub(crate) fn start(&mut self, region: &RegionPair, channel_info: &Channel, channel: i32, key: i32, velocity: i32) {
+    pub(crate) fn start(&mut self, region: &RegionPair, channel_info: &Channel, channel: i32, key: i32, velocity: i32,
+        portamento_source: i32, portamento_speed: f32) {
         self.exclusive_class = region.get_exclusive_class();
         self.channel = channel;
         self.key = key;
@@ -175,6 +182,15 @@ impl Voice {
 
         self.smoothed_cutoff = self.cutoff;
 
+        // Portamento: set initial pitch offset from source to target key
+        if portamento_speed > 0.0 && portamento_source >= 0 && portamento_source != key {
+            self.portamento_offset = (portamento_source - key) as f32;
+            self.portamento_speed = portamento_speed;
+        } else {
+            self.portamento_offset = 0.0;
+            self.portamento_speed = 0.0;
+        }
+
         self.voice_state = VoiceState::Playing;
         self.voice_length = 0;
     }
@@ -212,7 +228,17 @@ impl Voice {
             + self.mod_env_to_pitch * self.mod_env.get_value();
         let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
-        let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change + master_tune + scale_tuning;
+        let pitch = self.key as f32 + self.portamento_offset + vib_pitch_change + mod_pitch_change + channel_pitch_change + master_tune + scale_tuning;
+
+        // Decay portamento offset towards 0
+        if self.portamento_speed > 0.0 && self.portamento_offset != 0.0 {
+            let decay = self.portamento_speed * self.block.len() as f32;
+            if self.portamento_offset > 0.0 {
+                self.portamento_offset = (self.portamento_offset - decay).max(0.0);
+            } else {
+                self.portamento_offset = (self.portamento_offset + decay).min(0.0);
+            }
+        }
         if !self.oscillator.process(data, &mut self.block[..], pitch) {
             return false;
         }

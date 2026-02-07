@@ -161,7 +161,9 @@ impl Synthesizer {
                 0x0B => channel_info.set_expression_coarse(data2), // Expression Coarse
                 0x2B => channel_info.set_expression_fine(data2), // Expression Fine
                 0x20 => channel_info.set_bank_lsb(data2), // Bank Select LSB
+                0x05 => channel_info.set_portamento_time(data2), // Portamento Time
                 0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
+                0x41 => channel_info.set_portamento_on(data2), // Portamento On/Off
                 0x42 => channel_info.set_sostenuto_pedal(data2), // Sostenuto
                 0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
                 0x47 => channel_info.set_filter_resonance(data2), // Filter Resonance (CC#71)
@@ -169,6 +171,7 @@ impl Synthesizer {
                 0x49 => channel_info.set_attack_time(data2), // Attack Time (CC#73)
                 0x4A => channel_info.set_brightness(data2), // Brightness (CC#74)
                 0x4B => channel_info.set_decay_time(data2), // Decay Time (CC#75)
+                0x54 => channel_info.set_portamento_control(data2), // Portamento Control
                 0x5B => channel_info.set_reverb_send(data2), // Reverb Send
                 0x5D => channel_info.set_chorus_send(data2), // Chorus Send
                 0x5E => channel_info.set_variation_send(data2), // Variation/Effect Depth
@@ -222,6 +225,16 @@ impl Synthesizer {
             return;
         }
 
+        // Extract portamento info (&mut borrow, consumed before immutable borrow)
+        let portamento_source: i32;
+        let portamento_speed: f32;
+        {
+            let ch = &mut self.channels[channel as usize];
+            portamento_source = ch.consume_portamento_source();
+            portamento_speed = ch.get_portamento_speed(self.sample_rate);
+            ch.set_last_note_on_key(key);
+        }
+
         let channel_info = &self.channels[channel as usize];
 
         let preset_id = (channel_info.get_bank_number() << 16) | channel_info.get_patch_number();
@@ -255,7 +268,8 @@ impl Synthesizer {
                         let region_pair = RegionPair::new(preset_region, instrument_region);
 
                         if let Some(value) = self.voices.request_new(instrument_region, channel) {
-                            value.start(&region_pair, channel_info, channel, key, velocity)
+                            value.start(&region_pair, channel_info, channel, key, velocity,
+                                portamento_source, portamento_speed)
                         }
                     }
                 }

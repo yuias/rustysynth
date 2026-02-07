@@ -57,6 +57,12 @@ pub struct Channel {
     // Scale tuning: per-octave pitch offset in cents for each pitch class (C..B)
     // Default: all 0.0 (equal temperament)
     scale_tuning: [f32; 12],
+
+    // Portamento
+    portamento_on: bool,         // CC#65
+    portamento_time: u8,         // CC#5 (raw 0-127)
+    portamento_control: i32,     // CC#84 (source key, -1 = use last note)
+    last_note_on_key: i32,       // Tracks the last note-on key for portamento source
 }
 
 impl Channel {
@@ -92,6 +98,10 @@ impl Channel {
             vibrato_depth: 64,
             vibrato_delay: 64,
             scale_tuning: [0.0; 12],
+            portamento_on: false,
+            portamento_time: 0,
+            portamento_control: -1,
+            last_note_on_key: -1,
         };
 
         channel.reset();
@@ -133,6 +143,10 @@ impl Channel {
         self.vibrato_depth = 64;
         self.vibrato_delay = 64;
         self.scale_tuning = [0.0; 12];
+        self.portamento_on = false;
+        self.portamento_time = 0;
+        self.portamento_control = -1;
+        self.last_note_on_key = -1;
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
@@ -146,6 +160,8 @@ impl Channel {
 
         self.sostenuto_pedal = false;
         self.soft_pedal = false;
+        self.portamento_on = false;
+        self.portamento_control = -1;
     }
 
     pub(crate) fn set_bank(&mut self, value: i32) {
@@ -543,6 +559,58 @@ impl Channel {
             let timecents = (self.vibrato_delay as f32 - 64.0) * 50.0;
             2_f32.powf(timecents / 1200.0)
         }
+    }
+
+    // Portamento setters
+    pub(crate) fn set_portamento_on(&mut self, value: i32) {
+        self.portamento_on = value >= 64;
+    }
+
+    pub(crate) fn set_portamento_time(&mut self, value: i32) {
+        self.portamento_time = value as u8;
+    }
+
+    pub(crate) fn set_portamento_control(&mut self, value: i32) {
+        self.portamento_control = value;
+    }
+
+    pub(crate) fn set_last_note_on_key(&mut self, key: i32) {
+        self.last_note_on_key = key;
+    }
+
+    // Portamento getters
+    pub fn get_portamento_on(&self) -> bool {
+        self.portamento_on
+    }
+
+    pub fn get_portamento_time_raw(&self) -> u8 {
+        self.portamento_time
+    }
+
+    /// Returns the portamento source key for the next note-on.
+    /// If CC#84 was set, uses that value (one-shot); otherwise uses last_note_on_key.
+    /// Returns -1 if no source is available.
+    pub(crate) fn consume_portamento_source(&mut self) -> i32 {
+        if self.portamento_control >= 0 {
+            let source = self.portamento_control;
+            self.portamento_control = -1; // one-shot: consumed after use
+            source
+        } else {
+            self.last_note_on_key
+        }
+    }
+
+    /// Computes portamento speed in semitones per sample.
+    /// Returns 0.0 if portamento is off or time is 0.
+    pub(crate) fn get_portamento_speed(&self, sample_rate: i32) -> f32 {
+        if !self.portamento_on || self.portamento_time == 0 {
+            return 0.0;
+        }
+        // Exponential mapping: t=1 → ~15ms/octave, t=127 → ~10s/octave
+        let t = self.portamento_time as f32;
+        let one_octave_seconds = 0.01 * 2_f32.powf(t * 10.0 / 127.0);
+        let semitones_per_second = 12.0 / one_octave_seconds;
+        semitones_per_second / sample_rate as f32
     }
 
     // Scale tuning
