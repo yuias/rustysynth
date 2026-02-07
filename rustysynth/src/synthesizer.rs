@@ -581,18 +581,13 @@ impl Synthesizer {
             }
             // Roland GS
             0x41 => {
-                // 41 10 42 12 40 00 7F 00 41 = GS Reset
-                if data.len() >= 9
+                // 41 10 42 12 ... = GS DT1 (Data Set 1)
+                if data.len() >= 5
                     && data[1] == 0x10
                     && data[2] == 0x42
                     && data[3] == 0x12
-                    && data[4] == 0x40
-                    && data[5] == 0x00
-                    && data[6] == 0x7F
-                    && data[7] == 0x00
-                    && data[8] == 0x41
                 {
-                    self.reset();
+                    self.process_gs_sysex(&data[4..]);
                 }
             }
             // Yamaha XG
@@ -611,6 +606,66 @@ impl Synthesizer {
             }
             _ => {}
         }
+    }
+
+    /// Processes GS DT1 payload (after 41 10 42 12 header).
+    fn process_gs_sysex(&mut self, addr_and_data: &[u8]) {
+        if addr_and_data.len() < 3 {
+            return;
+        }
+
+        let addr_high = addr_and_data[0];
+        let addr_mid = addr_and_data[1];
+        let addr_low = addr_and_data[2];
+
+        // GS Reset: 40 00 7F 00 [checksum]
+        if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x7F {
+            if addr_and_data.len() >= 4 && addr_and_data[3] == 0x00 {
+                self.reset();
+            }
+            return;
+        }
+
+        // Scale Tuning: 40 1X 40 [12 data bytes] [checksum]
+        // X = GS part number (0-15)
+        if addr_high == 0x40 && (addr_mid & 0xF0) == 0x10 && addr_low == 0x40 {
+            let remaining = &addr_and_data[3..];
+            if remaining.len() >= 12 {
+                let part = (addr_mid & 0x0F) as usize;
+                // GS part-to-channel mapping:
+                // Part 0 → Ch10 (drums), Part 1 → Ch1, ..., Part 9 → Ch9,
+                // Part 10 → Ch11, ..., Part 15 → Ch16
+                let midi_channel = match part {
+                    0 => 9,                  // drums
+                    1..=9 => part - 1,       // Ch1-Ch9
+                    10..=15 => part,         // Ch11-Ch16
+                    _ => return,
+                };
+
+                let mut tuning = [0.0_f32; 12];
+                for i in 0..12 {
+                    // 0-127, center 64 = 0 cents, each unit = 1 cent
+                    tuning[i] = remaining[i] as f32 - 64.0;
+                }
+                if midi_channel < self.channels.len() {
+                    self.channels[midi_channel].set_scale_tuning(&tuning);
+                }
+            }
+            return;
+        }
+    }
+
+    /// Sets the scale tuning for a specific channel.
+    /// Values are in cents offset from equal temperament for each pitch class (C..B).
+    pub fn set_scale_tuning(&mut self, channel: usize, tuning: &[f32; 12]) {
+        if channel < self.channels.len() {
+            self.channels[channel].set_scale_tuning(tuning);
+        }
+    }
+
+    /// Gets the scale tuning for a specific channel.
+    pub fn get_scale_tuning(&self, channel: usize) -> Option<&[f32; 12]> {
+        self.channels.get(channel).map(|ch| ch.get_scale_tuning())
     }
 
     /// Gets the SoundFont used as the audio source.

@@ -211,7 +211,8 @@ impl Voice {
         let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.get_value()
             + self.mod_env_to_pitch * self.mod_env.get_value();
         let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
-        let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change + master_tune;
+        let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
+        let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change + master_tune + scale_tuning;
         if !self.oscillator.process(data, &mut self.block[..], pitch) {
             return false;
         }

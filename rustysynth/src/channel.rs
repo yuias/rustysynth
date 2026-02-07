@@ -53,6 +53,10 @@ pub struct Channel {
     vibrato_rate: u8,  // NRPN MSB=1, LSB=8
     vibrato_depth: u8, // NRPN MSB=1, LSB=9
     vibrato_delay: u8, // NRPN MSB=1, LSB=10
+
+    // Scale tuning: per-octave pitch offset in cents for each pitch class (C..B)
+    // Default: all 0.0 (equal temperament)
+    scale_tuning: [f32; 12],
 }
 
 impl Channel {
@@ -87,6 +91,7 @@ impl Channel {
             vibrato_rate: 64,
             vibrato_depth: 64,
             vibrato_delay: 64,
+            scale_tuning: [0.0; 12],
         };
 
         channel.reset();
@@ -127,6 +132,7 @@ impl Channel {
         self.vibrato_rate = 64;
         self.vibrato_depth = 64;
         self.vibrato_delay = 64;
+        self.scale_tuning = [0.0; 12];
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
@@ -537,5 +543,24 @@ impl Channel {
             let timecents = (self.vibrato_delay as f32 - 64.0) * 50.0;
             2_f32.powf(timecents / 1200.0)
         }
+    }
+
+    // Scale tuning
+
+    /// Sets the scale tuning for all 12 pitch classes (C..B).
+    /// Values are in cents offset from equal temperament.
+    pub(crate) fn set_scale_tuning(&mut self, tuning: &[f32; 12]) {
+        self.scale_tuning = *tuning;
+    }
+
+    /// Gets the scale tuning array (12 pitch classes, cents).
+    pub fn get_scale_tuning(&self) -> &[f32; 12] {
+        &self.scale_tuning
+    }
+
+    /// Returns the scale tuning offset in semitones for a given MIDI key.
+    pub(crate) fn get_scale_tuning_for_key(&self, key: i32) -> f32 {
+        let pitch_class = (key % 12) as usize;
+        self.scale_tuning[pitch_class] * 0.01 // cents to semitones
     }
 }
