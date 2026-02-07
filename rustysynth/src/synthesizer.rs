@@ -747,6 +747,13 @@ impl Synthesizer {
         self.channel_mute = mask;
     }
 
+    /// Sets whether a channel is a percussion channel.
+    pub fn set_percussion_channel(&mut self, channel: usize, is_percussion: bool) {
+        if channel < self.channels.len() {
+            self.channels[channel].set_percussion_channel(is_percussion);
+        }
+    }
+
     /// Gets the channel mute mask.
     pub fn get_channel_mute_mask(&self) -> u16 {
         self.channel_mute

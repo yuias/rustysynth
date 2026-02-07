@@ -149,6 +149,10 @@ impl Channel {
         self.last_note_on_key = -1;
     }
 
+    pub(crate) fn set_percussion_channel(&mut self, is_percussion: bool) {
+        self.is_percussion_channel = is_percussion;
+    }
+
     pub(crate) fn reset_all_controllers(&mut self) {
         self.modulation = 0;
         self.expression = 127 << 7;
