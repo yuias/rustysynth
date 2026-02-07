@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::channel::Channel;
 use crate::lfo::Lfo;
 use crate::modulation_envelope::ModulationEnvelope;
 use crate::oscillator::Oscillator;
@@ -41,13 +42,15 @@ impl RegionEx {
     pub(crate) fn start_volume_envelope(
         envelope: &mut VolumeEnvelope,
         region: &RegionPair,
+        channel_info: &Channel,
         key: i32,
         _velocity: i32,
     ) {
         // If the release time is shorter than 10 ms, it will be clamped to 10 ms to avoid pop noise.
 
         let delay = region.get_delay_volume_envelope();
-        let attack = region.get_attack_volume_envelope();
+        let attack = region.get_attack_volume_envelope()
+            * channel_info.get_attack_time_multiplier();
         let hold = region.get_hold_volume_envelope()
             * SoundFontMath::key_number_to_multiplying_factor(
                 region.get_key_number_to_volume_envelope_hold(),
@@ -57,9 +60,13 @@ impl RegionEx {
             * SoundFontMath::key_number_to_multiplying_factor(
                 region.get_key_number_to_volume_envelope_decay(),
                 key,
-            );
+            )
+            * channel_info.get_decay_time_multiplier();
         let sustain = SoundFontMath::decibels_to_linear(-region.get_sustain_volume_envelope());
-        let release = SoundFontMath::max(region.get_release_volume_envelope(), 0.01_f32);
+        let release = SoundFontMath::max(
+            region.get_release_volume_envelope() * channel_info.get_release_time_multiplier(),
+            0.01_f32,
+        );
 
         envelope.start(delay, attack, hold, decay, sustain, release);
     }
