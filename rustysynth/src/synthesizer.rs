@@ -43,6 +43,8 @@ pub struct Synthesizer {
     effects: Option<Effects>,
 
     channel_mute: u16,
+
+    master_tune: f32,
 }
 
 impl Synthesizer {
@@ -123,6 +125,7 @@ impl Synthesizer {
             master_volume,
             effects,
             channel_mute: 0,
+            master_tune: 0.0,
         })
     }
 
@@ -330,6 +333,8 @@ impl Synthesizer {
             effects.chorus.mute();
         }
 
+        self.master_tune = 0.0;
+
         self.block_read = self.block_size;
     }
 
@@ -379,7 +384,7 @@ impl Synthesizer {
 
     fn render_block(&mut self) {
         self.voices
-            .process(&self.sound_font.wave_data, &self.channels);
+            .process(&self.sound_font.wave_data, &self.channels, self.master_tune);
 
         let channel_mute = self.channel_mute;
 
@@ -624,6 +629,17 @@ impl Synthesizer {
         if let Some(effects) = self.effects.as_mut() {
             effects.reverb.set_width(value);
         }
+    }
+
+    /// Gets the master tuning offset in semitones.
+    pub fn get_master_tune(&self) -> f32 {
+        self.master_tune
+    }
+
+    /// Sets the master tuning offset in semitones.
+    /// For example, 1.0 = one semitone up, -0.5 = quarter tone down.
+    pub fn set_master_tune(&mut self, value: f32) {
+        self.master_tune = value;
     }
 
     /// Sets the chorus parameters.

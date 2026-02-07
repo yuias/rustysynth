@@ -70,7 +70,7 @@ impl VoiceCollection {
         Some(&mut self.voices[candidate])
     }
 
-    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel]) {
+    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel], master_tune: f32) {
         let mut i: usize = 0;
 
         loop {
@@ -78,7 +78,7 @@ impl VoiceCollection {
                 return;
             }
 
-            if self.voices[i].process(data, channels) {
+            if self.voices[i].process(data, channels, master_tune) {
                 i += 1;
             } else {
                 self.active_voice_count -= 1;
