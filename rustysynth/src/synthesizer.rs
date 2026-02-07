@@ -533,6 +533,86 @@ impl Synthesizer {
         }
     }
 
+    /// Processes a SysEx message.
+    ///
+    /// Supports:
+    /// - Universal Real-Time: Master Volume (04 01), Master Fine Tune (04 03),
+    ///   Master Coarse Tune (04 04)
+    /// - GM System On (7E xx 09 01) → reset
+    /// - GS Reset (41 10 42 12 40 00 7F 00 41) → reset
+    /// - XG System On (43 10 4C 00 00 7E 00) → reset
+    ///
+    /// The data slice should NOT include the leading F0 or trailing F7.
+    pub fn process_sysex(&mut self, data: &[u8]) {
+        if data.len() < 3 {
+            return;
+        }
+
+        match data[0] {
+            // Universal Non-Real-Time: GM System On
+            0x7E => {
+                // 7E xx 09 01 = GM System On
+                if data.len() >= 3 && data[1] <= 0x7F && data[2] == 0x09 {
+                    if data.len() >= 4 && (data[3] == 0x01 || data[3] == 0x02 || data[3] == 0x03) {
+                        self.reset();
+                    }
+                }
+            }
+            // Universal Real-Time
+            0x7F => {
+                if data.len() >= 3 && data[2] == 0x04 {
+                    if data.len() >= 5 && data[3] == 0x01 {
+                        // Master Volume: 7F xx 04 01 ll mm
+                        let volume = ((data[5] as u16) << 7 | data[4] as u16) as f32 / 16383.0;
+                        self.master_volume = volume;
+                    } else if data.len() >= 6 && data[3] == 0x03 {
+                        // Master Fine Tune: 7F xx 04 03 ll mm
+                        // 14-bit value, 0x2000 = center (no change)
+                        let value = (data[5] as i32) << 7 | data[4] as i32;
+                        // Range: -1 to +1 semitone (100 cents)
+                        self.master_tune = (value - 0x2000) as f32 / 8192.0;
+                    } else if data.len() >= 6 && data[3] == 0x04 {
+                        // Master Coarse Tune: 7F xx 04 04 00 mm
+                        // mm: 0x00-0x7F, 0x40 = center (no change)
+                        let semitones = data[5] as f32 - 64.0;
+                        self.master_tune = semitones;
+                    }
+                }
+            }
+            // Roland GS
+            0x41 => {
+                // 41 10 42 12 40 00 7F 00 41 = GS Reset
+                if data.len() >= 9
+                    && data[1] == 0x10
+                    && data[2] == 0x42
+                    && data[3] == 0x12
+                    && data[4] == 0x40
+                    && data[5] == 0x00
+                    && data[6] == 0x7F
+                    && data[7] == 0x00
+                    && data[8] == 0x41
+                {
+                    self.reset();
+                }
+            }
+            // Yamaha XG
+            0x43 => {
+                // 43 10 4C 00 00 7E 00 = XG System On
+                if data.len() >= 7
+                    && data[1] == 0x10
+                    && data[2] == 0x4C
+                    && data[3] == 0x00
+                    && data[4] == 0x00
+                    && data[5] == 0x7E
+                    && data[6] == 0x00
+                {
+                    self.reset();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Gets the SoundFont used as the audio source.
     pub fn get_sound_font(&self) -> &SoundFont {
         &self.sound_font
