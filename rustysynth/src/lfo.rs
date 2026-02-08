@@ -14,6 +14,7 @@ pub(crate) struct Lfo {
     period: f64,
 
     processed_sample_count: usize,
+    prev_value: f32,
     value: f32,
 }
 
@@ -26,6 +27,7 @@ impl Lfo {
             delay: 0_f64,
             period: 0_f64,
             processed_sample_count: 0,
+            prev_value: 0_f32,
             value: 0_f32,
         }
     }
@@ -38,9 +40,11 @@ impl Lfo {
             self.period = 1.0_f64 / frequency as f64;
 
             self.processed_sample_count = 0;
+            self.prev_value = 0_f32;
             self.value = 0_f32;
         } else {
             self.active = false;
+            self.prev_value = 0_f32;
             self.value = 0_f32;
         }
     }
@@ -50,6 +54,7 @@ impl Lfo {
             return;
         }
 
+        self.prev_value = self.value;
         self.processed_sample_count += self.block_size;
 
         let current_time = self.processed_sample_count as f64 / self.sample_rate as f64;
@@ -70,5 +75,9 @@ impl Lfo {
 
     pub(crate) fn get_value(&self) -> f32 {
         self.value
+    }
+
+    pub(crate) fn get_prev_value(&self) -> f32 {
+        self.prev_value
     }
 }

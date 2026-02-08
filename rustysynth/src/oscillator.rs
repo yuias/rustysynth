@@ -89,25 +89,30 @@ impl Oscillator {
         }
     }
 
-    pub(crate) fn process(&mut self, data: &[i16], block: &mut [f32], pitch: f32) -> bool {
-        let pitch_change = self.pitch_change_scale * (pitch - self.root_key as f32) + self.tune;
-        let pitch_ratio = self.sample_rate_ratio * 2_f32.powf(pitch_change / 12_f32);
-        self.fill_block(data, block, pitch_ratio as f64)
+    pub(crate) fn process(&mut self, data: &[i16], block: &mut [f32], pitch_start: f32, pitch_end: f32) -> bool {
+        let root = self.root_key as f32;
+        let pitch_change_start = self.pitch_change_scale * (pitch_start - root) + self.tune;
+        let pitch_change_end = self.pitch_change_scale * (pitch_end - root) + self.tune;
+        let pitch_ratio_start = self.sample_rate_ratio as f64 * 2_f64.powf(pitch_change_start as f64 / 12.0);
+        let pitch_ratio_end = self.sample_rate_ratio as f64 * 2_f64.powf(pitch_change_end as f64 / 12.0);
+        self.fill_block(data, block, pitch_ratio_start, pitch_ratio_end)
     }
 
-    fn fill_block(&mut self, data: &[i16], block: &mut [f32], pitch_ratio: f64) -> bool {
-        let pitch_ratio_fp = (Oscillator::FRAC_UNIT as f64 * pitch_ratio) as i64;
+    fn fill_block(&mut self, data: &[i16], block: &mut [f32], pitch_ratio_start: f64, pitch_ratio_end: f64) -> bool {
+        let pr_start_fp = (Oscillator::FRAC_UNIT as f64 * pitch_ratio_start) as i64;
+        let pr_end_fp = (Oscillator::FRAC_UNIT as f64 * pitch_ratio_end) as i64;
+        let step_fp = (pr_end_fp - pr_start_fp) / block.len() as i64;
 
         if self.looping {
-            self.fill_block_continuous(data, block, pitch_ratio_fp)
+            self.fill_block_continuous(data, block, pr_start_fp, step_fp)
         } else {
-            self.fill_block_no_loop(data, block, pitch_ratio_fp)
+            self.fill_block_no_loop(data, block, pr_start_fp, step_fp)
         }
     }
 
     /// 4-point Hermite interpolation for non-looping samples.
     /// Boundary handling: x0 is clamped at sample start; x3 relies on wave_data padding.
-    fn fill_block_no_loop(&mut self, data: &[i16], block: &mut [f32], pitch_ratio_fp: i64) -> bool {
+    fn fill_block_no_loop(&mut self, data: &[i16], block: &mut [f32], mut pitch_ratio_fp: i64, pitch_step_fp: i64) -> bool {
         let start = self.start as usize;
         let end = self.end as usize;
 
@@ -134,6 +139,7 @@ impl Oscillator {
 
             block[t] = Self::hermite(x0, x1, x2, x3, frac);
             self.position_fp += pitch_ratio_fp;
+            pitch_ratio_fp += pitch_step_fp;
         }
 
         true
@@ -145,7 +151,8 @@ impl Oscillator {
         &mut self,
         data: &[i16],
         block: &mut [f32],
-        pitch_ratio_fp: i64,
+        mut pitch_ratio_fp: i64,
+        pitch_step_fp: i64,
     ) -> bool {
         let end_loop_fp = (self.end_loop as i64) << Oscillator::FRAC_BITS;
         let loop_length = (self.end_loop - self.start_loop) as i64;
@@ -178,6 +185,7 @@ impl Oscillator {
 
             *sample = Self::hermite(x0, x1, x2, x3, frac);
             self.position_fp += pitch_ratio_fp;
+            pitch_ratio_fp += pitch_step_fp;
         }
 
         true

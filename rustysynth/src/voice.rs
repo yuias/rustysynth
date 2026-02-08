@@ -232,13 +232,20 @@ impl Voice {
         // SF2 Default Modulator #10: Channel Pressure → Vibrato LFO Pitch Depth
         // Source: channel pressure, linear, unipolar, positive. Amount: 50 cents.
         let pressure_vib = 0.01_f32 * 50.0 * channel_info.get_channel_pressure();
-        let vib_pitch_change = (0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch + pressure_vib)
-            * self.vib_lfo.get_value();
-        let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.get_value()
-            + self.mod_env_to_pitch * self.mod_env.get_value();
+        let vib_depth = 0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch + pressure_vib;
+        let mod_env_pitch = self.mod_env_to_pitch * self.mod_env.get_value();
         let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
-        let pitch = self.key as f32 + self.portamento_offset + vib_pitch_change + mod_pitch_change + channel_pitch_change + master_tune + scale_tuning;
+        let base_pitch = self.key as f32 + self.portamento_offset + mod_env_pitch
+            + channel_pitch_change + master_tune + scale_tuning;
+
+        // Compute pitch at block boundaries for per-sample LFO interpolation
+        let pitch_start = base_pitch
+            + vib_depth * self.vib_lfo.get_prev_value()
+            + self.mod_lfo_to_pitch * self.mod_lfo.get_prev_value();
+        let pitch_end = base_pitch
+            + vib_depth * self.vib_lfo.get_value()
+            + self.mod_lfo_to_pitch * self.mod_lfo.get_value();
 
         // Decay portamento offset towards 0
         if self.portamento_speed > 0.0 && self.portamento_offset != 0.0 {
@@ -249,7 +256,7 @@ impl Voice {
                 self.portamento_offset = (self.portamento_offset + decay).min(0.0);
             }
         }
-        if !self.oscillator.process(data, &mut self.block[..], pitch) {
+        if !self.oscillator.process(data, &mut self.block[..], pitch_start, pitch_end) {
             return false;
         }
 
