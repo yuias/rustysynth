@@ -788,6 +788,21 @@ impl Synthesizer {
         }
     }
 
+    /// Sets the chorus type preset (0=Chorus1, 1=Chorus2, 2=Chorus3,
+    /// 3=Chorus4, 4=FB Chorus, 5=Flanger).
+    pub fn set_chorus_type(&mut self, type_id: i32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.chorus.set_chorus_type(type_id);
+        }
+    }
+
+    /// Sets the chorus feedback gain (0.0 to <1.0).
+    pub fn set_chorus_feedback(&mut self, value: f32) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.chorus.set_feedback(value);
+        }
+    }
+
     /// Gets the master tuning offset in semitones.
     pub fn get_master_tune(&self) -> f32 {
         self.master_tune
