@@ -44,7 +44,7 @@ impl SoundFontSampleData {
             }
         }
 
-        let Some(wave_data) = wave_data else {
+        let Some(mut wave_data) = wave_data else {
             return Err(SoundFontError::SampleDataNotFound);
         };
 
@@ -57,6 +57,10 @@ impl SoundFontSampleData {
         if four_cc == b"OggS" {
             return Err(SoundFontError::UnsupportedSampleFormat);
         }
+
+        // Add padding for cubic interpolation (Hermite needs data[index+2]).
+        // Without this, the last sample's end+1 could exceed the buffer.
+        wave_data.extend_from_slice(&[0_i16; 3]);
 
         Ok(Self {
             bits_per_sample: 16,

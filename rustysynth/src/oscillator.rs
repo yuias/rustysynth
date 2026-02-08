@@ -33,7 +33,8 @@ pub(crate) struct Oscillator {
 impl Oscillator {
     const FRAC_BITS: i32 = 24;
     const FRAC_UNIT: i64 = 1_i64 << Oscillator::FRAC_BITS;
-    const FP_TO_SAMPLE: f32 = 1_f32 / (32768 * Oscillator::FRAC_UNIT) as f32;
+    const FRAC_UNIT_RECIP: f64 = 1.0 / (1_i64 << 24) as f64;
+    const SAMPLE_RECIP: f64 = 1.0 / 32768.0;
 
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
@@ -104,31 +105,42 @@ impl Oscillator {
         }
     }
 
+    /// 4-point Hermite interpolation for non-looping samples.
+    /// Boundary handling: x0 is clamped at sample start; x3 relies on wave_data padding.
     fn fill_block_no_loop(&mut self, data: &[i16], block: &mut [f32], pitch_ratio_fp: i64) -> bool {
+        let start = self.start as usize;
+        let end = self.end as usize;
+
         for t in 0..block.len() {
             let index = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
-            if index >= self.end as usize {
+            if index >= end {
                 if t > 0 {
-                    let len = block.len();
-                    block[t..len].fill(0_f32);
+                    block[t..].fill(0_f32);
                     return true;
                 } else {
                     return false;
                 }
             }
 
-            let x1 = data[index] as i64;
-            let x2 = data[index + 1] as i64;
-            let a_fp = self.position_fp & (Oscillator::FRAC_UNIT - 1);
-            block[t] = Oscillator::FP_TO_SAMPLE
-                * ((x1 << Oscillator::FRAC_BITS) + a_fp * (x2 - x1)) as f32;
+            let i0 = if index > start { index - 1 } else { start };
 
+            let x0 = data[i0] as f64;
+            let x1 = data[index] as f64;
+            let x2 = data[index + 1] as f64;
+            let x3 = data[index + 2] as f64;
+
+            let frac = (self.position_fp & (Oscillator::FRAC_UNIT - 1)) as f64
+                * Oscillator::FRAC_UNIT_RECIP;
+
+            block[t] = Self::hermite(x0, x1, x2, x3, frac);
             self.position_fp += pitch_ratio_fp;
         }
 
         true
     }
 
+    /// 4-point Hermite interpolation for looping samples.
+    /// All indices wrap within the loop region [start_loop, end_loop).
     fn fill_block_continuous(
         &mut self,
         data: &[i16],
@@ -138,27 +150,44 @@ impl Oscillator {
         let end_loop_fp = (self.end_loop as i64) << Oscillator::FRAC_BITS;
         let loop_length = (self.end_loop - self.start_loop) as i64;
         let loop_length_fp = loop_length << Oscillator::FRAC_BITS;
+        let sl = self.start_loop as usize;
+        let el = self.end_loop as usize;
+        let ll = loop_length as usize;
 
         for sample in block.iter_mut() {
             if self.position_fp >= end_loop_fp {
                 self.position_fp -= loop_length_fp;
             }
 
-            let index1 = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
-            let mut index2 = index1 + 1;
-            if index2 >= self.end_loop as usize {
-                index2 -= loop_length as usize;
-            }
+            let index = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
 
-            let x1 = data[index1] as i64;
-            let x2 = data[index2] as i64;
-            let a_fp = self.position_fp & (Oscillator::FRAC_UNIT - 1);
-            *sample = Oscillator::FP_TO_SAMPLE
-                * ((x1 << Oscillator::FRAC_BITS) + a_fp * (x2 - x1)) as f32;
+            let i0 = if index > sl { index - 1 } else { el - 1 };
+            let mut i2 = index + 1;
+            if i2 >= el { i2 -= ll; }
+            let mut i3 = index + 2;
+            if i3 >= el { i3 -= ll; }
+            if i3 >= el { i3 -= ll; } // handles degenerate loop_length == 1
 
+            let x0 = data[i0] as f64;
+            let x1 = data[index] as f64;
+            let x2 = data[i2] as f64;
+            let x3 = data[i3] as f64;
+
+            let frac = (self.position_fp & (Oscillator::FRAC_UNIT - 1)) as f64
+                * Oscillator::FRAC_UNIT_RECIP;
+
+            *sample = Self::hermite(x0, x1, x2, x3, frac);
             self.position_fp += pitch_ratio_fp;
         }
 
         true
+    }
+
+    #[inline(always)]
+    fn hermite(x0: f64, x1: f64, x2: f64, x3: f64, frac: f64) -> f32 {
+        let c1 = 0.5 * (x2 - x0);
+        let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
+        let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
+        (((c3 * frac + c2) * frac + c1) * frac + x1) as f32 * Self::SAMPLE_RECIP as f32
     }
 }
