@@ -108,7 +108,10 @@ impl VolumeEnvelope {
                 true
             }
             EnvelopeStage::Attack => {
-                self.value = (self.attack_slope * (current_time - self.attack_start_time)) as f32;
+                // SF2 spec §8.1.3: convex attack curve (cubic)
+                let t = (self.attack_slope * (current_time - self.attack_start_time)).min(1.0);
+                let inv = 1.0 - t;
+                self.value = (1.0 - inv * inv * inv) as f32;
                 self.priority = 3_f32 + self.value;
                 true
             }
