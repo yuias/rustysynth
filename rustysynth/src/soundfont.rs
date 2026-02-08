@@ -23,6 +23,7 @@ pub struct SoundFont {
     pub(crate) sample_headers: Vec<SampleHeader>,
     pub(crate) presets: Vec<Preset>,
     pub(crate) instruments: Vec<Instrument>,
+    warnings: Vec<String>,
 }
 
 impl SoundFont {
@@ -51,46 +52,103 @@ impl SoundFont {
         let sample_data = SoundFontSampleData::new(reader)?;
         let parameters = SoundFontParameters::new(reader)?;
 
-        let sound_font = Self {
+        let mut sound_font = Self {
             info,
             bits_per_sample: sample_data.bits_per_sample,
             wave_data: sample_data.wave_data,
             sample_headers: parameters.sample_headers,
             presets: parameters.presets,
             instruments: parameters.instruments,
+            warnings: Vec::new(),
         };
 
-        sound_font.sanity_check()?;
+        sound_font.sanitize();
 
         Ok(sound_font)
     }
 
-    fn sanity_check(&self) -> Result<(), SoundFontError> {
-        // https://github.com/sinshu/rustysynth/issues/22
-        // https://github.com/sinshu/rustysynth/issues/33
-        // https://github.com/sinshu/rustysynth/pull/51
-        for instrument in &self.instruments {
-            for region in &instrument.regions {
+    /// Remove invalid instrument regions and collect warnings.
+    ///
+    /// References:
+    /// - https://github.com/sinshu/rustysynth/issues/22
+    /// - https://github.com/sinshu/rustysynth/issues/33
+    /// - https://github.com/sinshu/rustysynth/pull/51
+    fn sanitize(&mut self) {
+        let wave_len = self.wave_data.len();
+        let mut warnings = Vec::new();
+
+        for instrument in &mut self.instruments {
+            let before = instrument.regions.len();
+            let inst_name = instrument.name.clone();
+            instrument.regions.retain(|region| {
                 let start = region.get_sample_start();
                 let end = region.get_sample_end();
                 let start_loop = region.get_sample_start_loop();
                 let end_loop = region.get_sample_end_loop();
                 let loop_mode = region.get_sample_modes();
 
-                if start < 0
-                    || start_loop < 0
-                    || end as usize >= self.wave_data.len()
-                    || end_loop as usize >= self.wave_data.len()
-                    || end <= start
-                    || end_loop < start_loop
-                    || (loop_mode != LoopMode::NoLoop && start_loop >= end_loop)
-                {
-                    return Err(SoundFontError::SanityCheckFailed);
+                if start < 0 {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (sample_start {} < 0)",
+                        inst_name, start
+                    ));
+                    return false;
                 }
+                if start_loop < 0 {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (sample_start_loop {} < 0)",
+                        inst_name, start_loop
+                    ));
+                    return false;
+                }
+                if end as usize >= wave_len {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (sample_end {} >= wave_data len {})",
+                        inst_name, end, wave_len
+                    ));
+                    return false;
+                }
+                if end_loop as usize >= wave_len {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (sample_end_loop {} >= wave_data len {})",
+                        inst_name, end_loop, wave_len
+                    ));
+                    return false;
+                }
+                if end <= start {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (sample_end {} <= sample_start {})",
+                        inst_name, end, start
+                    ));
+                    return false;
+                }
+                if end_loop < start_loop {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (end_loop {} < start_loop {})",
+                        inst_name, end_loop, start_loop
+                    ));
+                    return false;
+                }
+                if loop_mode != LoopMode::NoLoop && start_loop >= end_loop {
+                    warnings.push(format!(
+                        "instrument '{}': region removed (loop mode active but start_loop {} >= end_loop {})",
+                        inst_name, start_loop, end_loop
+                    ));
+                    return false;
+                }
+                true
+            });
+
+            let removed = before - instrument.regions.len();
+            if removed > 0 && instrument.regions.is_empty() {
+                warnings.push(format!(
+                    "instrument '{}': all {} regions removed",
+                    inst_name, before
+                ));
             }
         }
 
-        Ok(())
+        self.warnings = warnings;
     }
 
     /// Gets the information of the SoundFont.
@@ -121,6 +179,11 @@ impl SoundFont {
     /// Gets the instruments of the SoundFont.
     pub fn get_instruments(&self) -> &[Instrument] {
         &self.instruments[..]
+    }
+
+    /// Gets the warnings generated during loading (e.g. invalid regions that were skipped).
+    pub fn get_warnings(&self) -> &[String] {
+        &self.warnings
     }
 }
 
