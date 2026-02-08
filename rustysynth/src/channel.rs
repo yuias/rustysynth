@@ -58,6 +58,9 @@ pub struct Channel {
     // Default: all 0.0 (equal temperament)
     scale_tuning: [f32; 12],
 
+    // Channel pressure (aftertouch)
+    channel_pressure: u8,
+
     // Portamento
     portamento_on: bool,         // CC#65
     portamento_time: u8,         // CC#5 (raw 0-127)
@@ -98,6 +101,7 @@ impl Channel {
             vibrato_depth: 64,
             vibrato_delay: 64,
             scale_tuning: [0.0; 12],
+            channel_pressure: 0,
             portamento_on: false,
             portamento_time: 0,
             portamento_control: -1,
@@ -143,6 +147,7 @@ impl Channel {
         self.vibrato_depth = 64;
         self.vibrato_delay = 64;
         self.scale_tuning = [0.0; 12];
+        self.channel_pressure = 0;
         self.portamento_on = false;
         self.portamento_time = 0;
         self.portamento_control = -1;
@@ -164,6 +169,7 @@ impl Channel {
 
         self.sostenuto_pedal = false;
         self.soft_pedal = false;
+        self.channel_pressure = 0;
         self.portamento_on = false;
         self.portamento_control = -1;
     }
@@ -563,6 +569,20 @@ impl Channel {
             let timecents = (self.vibrato_delay as f32 - 64.0) * 50.0;
             2_f32.powf(timecents / 1200.0)
         }
+    }
+
+    // Channel pressure
+    pub(crate) fn set_channel_pressure(&mut self, value: i32) {
+        self.channel_pressure = value as u8;
+    }
+
+    /// Returns channel pressure as a normalized 0.0-1.0 value.
+    pub(crate) fn get_channel_pressure(&self) -> f32 {
+        self.channel_pressure as f32 * (1.0 / 127.0)
+    }
+
+    pub fn get_channel_pressure_raw(&self) -> u8 {
+        self.channel_pressure
     }
 
     // Portamento setters

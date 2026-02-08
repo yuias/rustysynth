@@ -185,6 +185,7 @@ impl Synthesizer {
                 _ => (),
             },
             0xC0 => channel_info.set_patch(data1), // Program Change
+            0xD0 => channel_info.set_channel_pressure(data1), // Channel Pressure
             0xE0 => channel_info.set_pitch_bend(data1, data2), // Pitch Bend
             _ => (),
         }

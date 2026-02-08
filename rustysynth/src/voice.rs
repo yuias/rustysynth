@@ -154,6 +154,13 @@ impl Voice {
         }
 
         self.cutoff = region.get_initial_filter_cutoff_frequency();
+        // SF2 Default Modulator #2: Note-On Velocity → Filter Cutoff
+        // Source: velocity, linear, unipolar, negative. Amount: -2400 cents.
+        // At vel=0: cutoff reduced by 2400 cents (2 octaves). At vel=127: no change.
+        if velocity < 127 {
+            let vel_fc_cents = -2400.0 * (1.0 - velocity as f32 / 127.0);
+            self.cutoff *= SoundFontMath::cents_to_multiplying_factor(vel_fc_cents);
+        }
         self.resonance = SoundFontMath::decibels_to_linear(region.get_initial_filter_q());
 
         self.vib_lfo_to_pitch = 0.01_f32 * region.get_vibrato_lfo_to_pitch() as f32
@@ -222,7 +229,10 @@ impl Voice {
         self.vib_lfo.process();
         self.mod_lfo.process();
 
-        let vib_pitch_change = (0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch)
+        // SF2 Default Modulator #10: Channel Pressure → Vibrato LFO Pitch Depth
+        // Source: channel pressure, linear, unipolar, positive. Amount: 50 cents.
+        let pressure_vib = 0.01_f32 * 50.0 * channel_info.get_channel_pressure();
+        let vib_pitch_change = (0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch + pressure_vib)
             * self.vib_lfo.get_value();
         let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.get_value()
             + self.mod_env_to_pitch * self.mod_env.get_value();
