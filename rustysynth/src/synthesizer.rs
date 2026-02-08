@@ -268,7 +268,7 @@ impl Synthesizer {
                     if instrument_region.contains(key, velocity) {
                         let region_pair = RegionPair::new(preset_region, instrument_region);
 
-                        if let Some(value) = self.voices.request_new(instrument_region, channel) {
+                        if let Some(value) = self.voices.request_new(instrument_region, channel, key) {
                             value.start(&region_pair, channel_info, channel, key, velocity,
                                 portamento_source, portamento_speed)
                         }

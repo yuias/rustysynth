@@ -29,6 +29,7 @@ impl VoiceCollection {
         &mut self,
         region: &InstrumentRegion,
         channel: i32,
+        key: i32,
     ) -> Option<&mut Voice> {
         // If an exclusive class is assigned to the region, find a voice with the same class.
         // If found, reuse it to avoid playing multiple voices with the same class at a time.
@@ -50,12 +51,25 @@ impl VoiceCollection {
         }
 
         // Too many active voices...
-        // Find one which has the lowest priority.
+        // Find one which has the lowest effective priority.
+        // Context-aware: prefer stealing same-key/same-channel voices to minimize
+        // audible disruption across unrelated parts.
         let mut candidate: usize = 0;
         let mut lowest_priority = f32::MAX;
         for i in 0..self.active_voice_count {
             let voice = &self.voices[i];
-            let priority = voice.priority();
+            let mut priority = voice.priority();
+
+            // Prefer stealing from the same channel (same musical part)
+            if voice.channel() == channel {
+                priority -= 2.0;
+            }
+
+            // Strongly prefer re-triggering the same key on the same channel
+            if voice.channel() == channel && voice.key() == key {
+                priority -= 10.0;
+            }
+
             if priority < lowest_priority {
                 lowest_priority = priority;
                 candidate = i;
