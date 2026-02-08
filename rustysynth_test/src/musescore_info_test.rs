@@ -30,7 +30,7 @@ fn soundfont_info() {
     assert_eq!(info.get_comments().len(), 2207);
     assert_eq!(info.get_tools(), ":SFEDT v1.10:SFEDT v1.36:");
 
-    assert_eq!(sf.get_wave_data().len(), 15513098);
+    assert_eq!(sf.get_wave_data().len(), 15513101); // +3 for cubic interpolation padding
 
     let mut sum: i32 = 0;
     for value in sf.get_wave_data().iter() {

@@ -29,7 +29,7 @@ fn soundfont_info() {
     assert_eq!(info.get_comments(), "");
     assert_eq!(info.get_tools(), "Awave Studio v8.5");
 
-    assert_eq!(sound_font.get_wave_data().len(), 2882168);
+    assert_eq!(sound_font.get_wave_data().len(), 2882171); // +3 for cubic interpolation padding
 
     let mut sum: i32 = 0;
     for value in sound_font.get_wave_data().iter() {
