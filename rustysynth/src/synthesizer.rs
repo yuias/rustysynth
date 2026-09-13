@@ -45,6 +45,11 @@ pub struct Synthesizer {
     channel_mute: u16,
 
     master_tune: f32,
+    // Values received via Universal Real-Time SysEx. Kept apart from the API-set master
+    // volume and tune so that reset() can clear them without discarding the host settings.
+    sysex_master_volume: f32,
+    sysex_fine_tune: f32,
+    sysex_coarse_tune: f32,
 }
 
 impl Synthesizer {
@@ -126,6 +131,9 @@ impl Synthesizer {
             effects,
             channel_mute: 0,
             master_tune: 0.0,
+            sysex_master_volume: 1.0,
+            sysex_fine_tune: 0.0,
+            sysex_coarse_tune: 0.0,
         })
     }
 
@@ -348,7 +356,9 @@ impl Synthesizer {
             effects.chorus.mute();
         }
 
-        self.master_tune = 0.0;
+        self.sysex_master_volume = 1.0;
+        self.sysex_fine_tune = 0.0;
+        self.sysex_coarse_tune = 0.0;
 
         self.block_read = self.block_size;
     }
@@ -407,8 +417,10 @@ impl Synthesizer {
     }
 
     fn render_block(&mut self) {
+        let master_tune = self.master_tune + self.sysex_coarse_tune + self.sysex_fine_tune;
         self.voices
-            .process(&self.sound_font.wave_data, &self.channels, self.master_tune);
+            .process(&self.sound_font.wave_data, &self.channels, master_tune);
+        let master_volume = self.master_volume * self.sysex_master_volume;
 
         let channel_mute = self.channel_mute;
 
@@ -419,7 +431,7 @@ impl Synthesizer {
                 && (voice.channel() as usize) < 16
                 && (channel_mute & (1 << voice.channel() as usize)) != 0;
 
-            let vol = if muted { 0.0 } else { self.master_volume };
+            let vol = if muted { 0.0 } else { master_volume };
 
             let previous_gain_left = vol * voice.previous_mix_gain_left;
             let current_gain_left = vol * voice.current_mix_gain_left;
@@ -485,12 +497,12 @@ impl Synthesizer {
                 chorus_output_right,
             );
             ArrayMath::multiply_add(
-                self.master_volume,
+                master_volume,
                 chorus_output_left,
                 &mut self.block_left[..],
             );
             ArrayMath::multiply_add(
-                self.master_volume,
+                master_volume,
                 chorus_output_right,
                 &mut self.block_right[..],
             );
@@ -526,12 +538,12 @@ impl Synthesizer {
 
             reverb.process(reverb_input, reverb_output_left, reverb_output_right);
             ArrayMath::multiply_add(
-                self.master_volume,
+                master_volume,
                 reverb_output_left,
                 &mut self.block_left[..],
             );
             ArrayMath::multiply_add(
-                self.master_volume,
+                master_volume,
                 reverb_output_right,
                 &mut self.block_right[..],
             );
@@ -587,19 +599,20 @@ impl Synthesizer {
                 if data.len() >= 3 && data[2] == 0x04 {
                     if data.len() >= 6 && data[3] == 0x01 {
                         // Master Volume: 7F xx 04 01 ll mm
+                        // Full scale is the default level, so files that send 7F 7F are not louder.
                         let volume = ((data[5] as u16) << 7 | data[4] as u16) as f32 / 16383.0;
-                        self.master_volume = volume;
+                        self.sysex_master_volume = volume;
                     } else if data.len() >= 6 && data[3] == 0x03 {
                         // Master Fine Tune: 7F xx 04 03 ll mm
                         // 14-bit value, 0x2000 = center (no change)
                         let value = (data[5] as i32) << 7 | data[4] as i32;
                         // Range: -1 to +1 semitone (100 cents)
-                        self.master_tune = (value - 0x2000) as f32 / 8192.0;
+                        self.sysex_fine_tune = (value - 0x2000) as f32 / 8192.0;
                     } else if data.len() >= 6 && data[3] == 0x04 {
                         // Master Coarse Tune: 7F xx 04 04 00 mm
                         // mm: 0x00-0x7F, 0x40 = center (no change)
                         let semitones = data[5] as f32 - 64.0;
-                        self.master_tune = semitones;
+                        self.sysex_coarse_tune = semitones;
                     }
                 }
             }
@@ -718,6 +731,7 @@ impl Synthesizer {
     }
 
     /// Gets the master volume.
+    /// This does not include the level received via Master Volume SysEx.
     pub fn get_master_volume(&self) -> f32 {
         self.master_volume
     }
@@ -813,6 +827,7 @@ impl Synthesizer {
     }
 
     /// Gets the master tuning offset in semitones.
+    /// This does not include tuning received via Master Fine/Coarse Tune SysEx.
     pub fn get_master_tune(&self) -> f32 {
         self.master_tune
     }
@@ -947,12 +962,44 @@ mod tests {
     }
 
     #[test]
-    fn truncated_master_volume_sysex_is_ignored() {
+    fn master_fine_and_coarse_tune_sysex_add_up() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_master_tune(0.25);
+
+        synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x04, 0x00, 0x42]);
+        synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x03, 0x00, 0x60]);
+        assert_eq!(synthesizer.sysex_coarse_tune, 2.0);
+        assert_eq!(synthesizer.sysex_fine_tune, 0.5);
+
+        // reset() is called by the sequencer before playback: it must drop the values from
+        // the previous file but keep the host's own tuning.
+        synthesizer.reset();
+        assert_eq!(synthesizer.sysex_coarse_tune, 0.0);
+        assert_eq!(synthesizer.sysex_fine_tune, 0.0);
+        assert_eq!(synthesizer.get_master_tune(), 0.25);
+    }
+
+    #[test]
+    fn full_scale_master_volume_sysex_keeps_default_level() {
         let settings = SynthesizerSettings::new(44100);
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
         let volume = synthesizer.get_master_volume();
 
+        synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x7F, 0x7F]);
+        assert_eq!(synthesizer.master_volume * synthesizer.sysex_master_volume, volume);
+
+        synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x00, 0x00]);
+        assert_eq!(synthesizer.sysex_master_volume, 0.0);
+        synthesizer.reset();
+        assert_eq!(synthesizer.sysex_master_volume, 1.0);
+    }
+
+    #[test]
+    fn truncated_master_volume_sysex_is_ignored() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
         synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x7F]);
-        assert_eq!(synthesizer.get_master_volume(), volume);
+        assert_eq!(synthesizer.sysex_master_volume, 1.0);
     }
 }
