@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use crate::channel::Channel;
 use crate::generator_type::GeneratorType;
 use crate::modulator::Modulator;
+use crate::modulator_source::{Controller, ModulatorSource};
 
 /// The SF2.04 default modulators (section 8.4), in the order of `DefaultModulator`.
 ///
@@ -24,6 +26,31 @@ pub(crate) const DEFAULT_MODULATOR_COUNT: usize = 10;
 
 /// Upper bound of non-default modulators per voice; the rest are ignored.
 pub(crate) const MAX_VOICE_MODULATORS: usize = 32;
+
+/// Generator offsets produced by modulators, in generator units.
+pub(crate) type GeneratorOffsets = [f32; GeneratorType::COUNT];
+
+/// Whether the voice applies a destination on every block. Other destinations (envelope
+/// and LFO timing, key scaling) are only read when the note starts.
+pub(crate) fn is_realtime_destination(destination: u16) -> bool {
+    matches!(
+        destination,
+        GeneratorType::MODULATION_LFO_TO_PITCH
+            | GeneratorType::VIBRATO_LFO_TO_PITCH
+            | GeneratorType::MODULATION_ENVELOPE_TO_PITCH
+            | GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY
+            | GeneratorType::INITIAL_FILTER_Q
+            | GeneratorType::MODULATION_LFO_TO_FILTER_CUTOFF_FREQUENCY
+            | GeneratorType::MODULATION_ENVELOPE_TO_FILTER_CUTOFF_FREQUENCY
+            | GeneratorType::MODULATION_LFO_TO_VOLUME
+            | GeneratorType::CHORUS_EFFECTS_SEND
+            | GeneratorType::REVERB_EFFECTS_SEND
+            | GeneratorType::PAN
+            | GeneratorType::INITIAL_ATTENUATION
+            | GeneratorType::COARSE_TUNE
+            | GeneratorType::FINE_TUNE
+    )
+}
 
 const fn default_modulator(source: u16, destination: u16, amount: i16, amount_source: u16) -> Modulator {
     Modulator {
@@ -57,6 +84,7 @@ pub(crate) struct VoiceModulators {
     items: [Modulator; MAX_VOICE_MODULATORS],
     item_amounts: [f32; MAX_VOICE_MODULATORS],
     len: usize,
+    realtime_len: usize,
     /// Effective amount of each default modulator divided by its SF2 default amount.
     default_scales: [f32; DEFAULT_MODULATOR_COUNT],
 }
@@ -67,6 +95,7 @@ impl VoiceModulators {
             items: [DEFAULT_MODULATORS[0]; MAX_VOICE_MODULATORS],
             item_amounts: [0_f32; MAX_VOICE_MODULATORS],
             len: 0,
+            realtime_len: 0,
             default_scales: [1_f32; DEFAULT_MODULATOR_COUNT],
         }
     }
@@ -117,6 +146,46 @@ impl VoiceModulators {
         for (k, scale) in self.default_scales.iter_mut().enumerate() {
             *scale = amounts[k] / DEFAULT_MODULATORS[k].amount as f32;
         }
+
+        self.realtime_len = self.items[..self.len]
+            .iter()
+            .filter(|item| is_realtime_destination(item.destination))
+            .count();
+    }
+
+    /// True when some modulator targets a destination that is applied on every block.
+    pub(crate) fn has_realtime_items(&self) -> bool {
+        self.realtime_len > 0
+    }
+
+    /// Overwrites `offsets` with the sum of the modulators whose destinations are realtime
+    /// (`realtime == true`) or note-on only (`realtime == false`).
+    pub(crate) fn evaluate(
+        &self,
+        channel: &Channel,
+        key: i32,
+        velocity: i32,
+        realtime: bool,
+        offsets: &mut GeneratorOffsets,
+    ) {
+        offsets.fill(0_f32);
+        for (item, &amount) in self.items[..self.len].iter().zip(self.item_amounts.iter()) {
+            if is_realtime_destination(item.destination) != realtime {
+                continue;
+            }
+            let source = source_value(ModulatorSource(item.source), channel, key, velocity);
+            let amount_source = ModulatorSource(item.amount_source);
+            let scale = match amount_source.controller() {
+                Some(Controller::None) => 1_f32,
+                _ => source_value(amount_source, channel, key, velocity),
+            };
+            let mut value = amount * source * scale;
+            // Transform 2 is absolute value; other transforms were rejected at load.
+            if item.transform == 2 {
+                value = value.abs();
+            }
+            offsets[item.destination as usize] += value;
+        }
     }
 
     fn find_default(modulator: &Modulator) -> Option<usize> {
@@ -143,6 +212,22 @@ impl VoiceModulators {
         self.items[..self.len]
             .iter()
             .zip(self.item_amounts[..self.len].iter().copied())
+    }
+}
+
+fn source_value(source: ModulatorSource, channel: &Channel, key: i32, velocity: i32) -> f32 {
+    let clamp_7bit = |value: i32| value.clamp(0, 127) as u8;
+    match source.controller() {
+        Some(Controller::Velocity) => source.map_7bit(clamp_7bit(velocity)),
+        Some(Controller::Key) => source.map_7bit(clamp_7bit(key)),
+        Some(Controller::PolyPressure) => source.map_7bit(channel.get_poly_pressure(key)),
+        Some(Controller::ChannelPressure) => source.map_7bit(channel.get_channel_pressure_raw()),
+        Some(Controller::PitchWheel) => source.map_14bit(channel.get_pitch_bend_raw()),
+        Some(Controller::PitchWheelSensitivity) => {
+            source.map_7bit(clamp_7bit(channel.get_pitch_bend_range() as i32))
+        }
+        Some(Controller::Cc(controller)) => source.map_7bit(channel.get_controller_value(controller)),
+        Some(Controller::None) | None => 0_f32,
     }
 }
 

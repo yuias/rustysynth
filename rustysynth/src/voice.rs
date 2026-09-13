@@ -11,7 +11,8 @@ use crate::region_ex::RegionEx;
 use crate::region_pair::RegionPair;
 use crate::soundfont_math::SoundFontMath;
 use crate::synthesizer_settings::SynthesizerSettings;
-use crate::voice_modulators::{DefaultModulator, VoiceModulators};
+use crate::generator_type::GeneratorType;
+use crate::voice_modulators::{DefaultModulator, GeneratorOffsets, VoiceModulators};
 use crate::volume_envelope::VolumeEnvelope;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,6 +94,8 @@ pub(crate) struct Voice {
     enable_velocity_to_filter_cutoff: bool,
     enable_soundfont_modulators: bool,
     modulators: VoiceModulators,
+    // Offsets of destinations applied per block, re-evaluated while controllers can change.
+    realtime_offsets: GeneratorOffsets,
 }
 
 impl Voice {
@@ -142,6 +145,7 @@ impl Voice {
             enable_velocity_to_filter_cutoff: settings.enable_velocity_to_filter_cutoff,
             enable_soundfont_modulators: settings.enable_soundfont_modulators,
             modulators: VoiceModulators::new(),
+            realtime_offsets: [0_f32; GeneratorType::COUNT],
         }
     }
 
@@ -154,6 +158,14 @@ impl Voice {
             self.enable_soundfont_modulators,
             self.enable_velocity_to_filter_cutoff,
         );
+        // Destinations read only at note-on take the modulator offsets through the region;
+        // realtime destinations are applied on top of the region values in process().
+        let mut note_on_offsets: GeneratorOffsets = [0_f32; GeneratorType::COUNT];
+        self.modulators
+            .evaluate(channel_info, key, velocity, false, &mut note_on_offsets);
+        self.modulators
+            .evaluate(channel_info, key, velocity, true, &mut self.realtime_offsets);
+        let region = &region.with_offsets(&note_on_offsets);
         self.channel = channel;
         self.key = key;
         self.velocity = velocity;
@@ -252,20 +264,50 @@ impl Voice {
         self.vib_lfo.process();
         self.mod_lfo.process();
 
+        if self.modulators.has_realtime_items() {
+            self.modulators.evaluate(
+                channel_info,
+                self.key,
+                self.velocity,
+                true,
+                &mut self.realtime_offsets,
+            );
+        }
+        let offset = |destination: u16| self.realtime_offsets[destination as usize];
+        let cutoff_offset = offset(GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY);
+        let q_offset = offset(GeneratorType::INITIAL_FILTER_Q);
+        let lfo_to_cutoff_offset = offset(GeneratorType::MODULATION_LFO_TO_FILTER_CUTOFF_FREQUENCY);
+        let env_to_cutoff_offset =
+            offset(GeneratorType::MODULATION_ENVELOPE_TO_FILTER_CUTOFF_FREQUENCY);
+        let lfo_to_volume_offset = offset(GeneratorType::MODULATION_LFO_TO_VOLUME);
+        let attenuation_offset = offset(GeneratorType::INITIAL_ATTENUATION);
+        let pan_offset = offset(GeneratorType::PAN);
+        let reverb_offset = offset(GeneratorType::REVERB_EFFECTS_SEND);
+        let chorus_offset = offset(GeneratorType::CHORUS_EFFECTS_SEND);
+
         // SF2 Default Modulator #10: Channel Pressure → Vibrato LFO Pitch Depth
         // Source: channel pressure, linear, unipolar, positive. Amount: 50 cents.
         let pressure_vib = 0.01_f32 * 50.0 * channel_info.get_channel_pressure()
             * self.modulators.default_scale(DefaultModulator::ChannelPressureToVibrato);
         let wheel_vib = 0.01_f32 * channel_info.get_modulation()
             * self.modulators.default_scale(DefaultModulator::ModulationWheelToVibrato);
-        let vib_depth = wheel_vib + self.vib_lfo_to_pitch + pressure_vib;
-        let mod_env_pitch = self.mod_env_to_pitch * self.mod_env.get_value();
+        let vib_lfo_to_pitch =
+            self.vib_lfo_to_pitch + 0.01_f32 * offset(GeneratorType::VIBRATO_LFO_TO_PITCH);
+        let mod_lfo_to_pitch =
+            self.mod_lfo_to_pitch + 0.01_f32 * offset(GeneratorType::MODULATION_LFO_TO_PITCH);
+        let mod_env_to_pitch =
+            self.mod_env_to_pitch + 0.01_f32 * offset(GeneratorType::MODULATION_ENVELOPE_TO_PITCH);
+        let modulator_tune = offset(GeneratorType::COARSE_TUNE)
+            + 0.01_f32 * offset(GeneratorType::FINE_TUNE);
+
+        let vib_depth = wheel_vib + vib_lfo_to_pitch + pressure_vib;
+        let mod_env_pitch = mod_env_to_pitch * self.mod_env.get_value();
         let channel_pitch_change = channel_info.get_tune()
             + channel_info.get_pitch_bend()
                 * self.modulators.default_scale(DefaultModulator::PitchWheelToFineTune);
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
         let base_pitch = self.key as f32 + mod_env_pitch
-            + channel_pitch_change + master_tune + scale_tuning;
+            + channel_pitch_change + master_tune + scale_tuning + modulator_tune;
 
         let (portamento_start, portamento_end) = self.advance_portamento();
 
@@ -273,11 +315,11 @@ impl Voice {
         let pitch_start = base_pitch
             + portamento_start
             + vib_depth * self.vib_lfo.get_prev_value()
-            + self.mod_lfo_to_pitch * self.mod_lfo.get_prev_value();
+            + mod_lfo_to_pitch * self.mod_lfo.get_prev_value();
         let pitch_end = base_pitch
             + portamento_end
             + vib_depth * self.vib_lfo.get_value()
-            + self.mod_lfo_to_pitch * self.mod_lfo.get_value();
+            + mod_lfo_to_pitch * self.mod_lfo.get_value();
         if !self.oscillator.process(data, &mut self.block[..], pitch_start, pitch_end) {
             return false;
         }
@@ -299,12 +341,15 @@ impl Voice {
             let needs_update = self.dynamic_cutoff
                 || brightness_cents != 0.0
                 || q_scale != self.filter_q_scale
-                || self.smoothed_cutoff != self.cutoff;
+                || self.smoothed_cutoff != self.cutoff
+                || self.modulators.has_realtime_items();
 
             if needs_update {
-                let mod_cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
-                    + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
-                let total_cents = mod_cents + brightness_cents;
+                let mod_cents = (self.mod_lfo_to_cutoff as f32 + lfo_to_cutoff_offset)
+                    * self.mod_lfo.get_value()
+                    + (self.mod_env_to_cutoff as f32 + env_to_cutoff_offset)
+                        * self.mod_env.get_value();
+                let total_cents = mod_cents + brightness_cents + cutoff_offset;
                 let factor = SoundFontMath::cents_to_multiplying_factor(total_cents);
                 let new_cutoff = factor * self.cutoff;
 
@@ -313,8 +358,13 @@ impl Voice {
                 let upper_limit = 2_f32 * self.smoothed_cutoff;
                 self.smoothed_cutoff = SoundFontMath::clamp(new_cutoff, lower_limit, upper_limit);
 
+                let resonance = if q_offset != 0.0 {
+                    self.resonance * SoundFontMath::decibels_to_linear(0.1_f32 * q_offset)
+                } else {
+                    self.resonance
+                };
                 self.filter
-                    .set_low_pass_filter(self.smoothed_cutoff, self.resonance, q_scale);
+                    .set_low_pass_filter(self.smoothed_cutoff, resonance, q_scale);
                 self.filter_q_scale = q_scale;
             }
         }
@@ -339,15 +389,20 @@ impl Voice {
         };
 
         let mut mix_gain = self.note_gain * channel_gain * self.vol_env.get_value();
-        if self.dynamic_volume {
-            let decibels = self.mod_lfo_to_volume * self.mod_lfo.get_value();
+        if self.dynamic_volume || lfo_to_volume_offset != 0.0 {
+            let lfo_to_volume = self.mod_lfo_to_volume + 0.1_f32 * lfo_to_volume_offset;
+            let decibels = lfo_to_volume * self.mod_lfo.get_value();
             mix_gain *= SoundFontMath::decibels_to_linear(decibels);
+        }
+        if attenuation_offset != 0.0 {
+            mix_gain *= SoundFontMath::decibels_to_linear(-0.1_f32 * attenuation_offset);
         }
 
         let angle =
             (consts::PI / 200_f32) * (channel_info.get_pan()
                 * self.modulators.default_scale(DefaultModulator::PanToPan)
                 + self.instrument_pan
+                + 0.1_f32 * pan_offset
                 + 50_f32);
         if angle <= 0_f32 {
             self.current_mix_gain_left = mix_gain;
@@ -363,14 +418,16 @@ impl Voice {
         self.current_reverb_send = SoundFontMath::clamp(
             channel_info.get_reverb_send()
                 * self.modulators.default_scale(DefaultModulator::ReverbSend)
-                + self.instrument_reverb,
+                + self.instrument_reverb
+                + 0.001_f32 * reverb_offset,
             0_f32,
             1_f32,
         );
         self.current_chorus_send = SoundFontMath::clamp(
             channel_info.get_chorus_send()
                 * self.modulators.default_scale(DefaultModulator::ChorusSend)
-                + self.instrument_chorus,
+                + self.instrument_chorus
+                + 0.001_f32 * chorus_offset,
             0_f32,
             1_f32,
         );

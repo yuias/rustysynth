@@ -1098,6 +1098,76 @@ mod tests {
         assert!(cutoff_for(false) < 0.3 * full);
     }
 
+    fn voice_gain(synthesizer: &Synthesizer, key: i32) -> f32 {
+        let voice = synthesizer
+            .voices
+            .active_voices()
+            .iter()
+            .find(|voice| voice.key() == key)
+            .unwrap();
+        voice.current_mix_gain_left + voice.current_mix_gain_right
+    }
+
+    #[test]
+    fn controller_modulator_changes_sounding_voice() {
+        // CC2, linear, unipolar -> initial attenuation, 480 cB at full scale.
+        let sound_font =
+            modulated_soundfont(vec![(0x0082, GeneratorType::INITIAL_ATTENUATION, 480, 0, 0)], Vec::new());
+        let settings = SynthesizerSettings::new(44100);
+        let mut reference = Synthesizer::new(&sound_font, &settings).unwrap();
+        let mut modulated = Synthesizer::new(&sound_font, &settings).unwrap();
+        for synthesizer in [&mut reference, &mut modulated] {
+            synthesizer.note_on(0, 60, 100);
+            render_block(synthesizer);
+        }
+        assert_eq!(voice_gain(&modulated, 60), voice_gain(&reference, 60));
+
+        modulated.process_midi_message(0, 0xB0, 2, 127);
+        render_block(&mut reference);
+        render_block(&mut modulated);
+
+        // 480 cB * 127/128 is about 47.6 dB.
+        let db = 20.0 * (voice_gain(&modulated, 60) / voice_gain(&reference, 60)).log10();
+        assert!((db + 47.625).abs() < 0.01, "db = {}", db);
+    }
+
+    #[test]
+    fn poly_pressure_modulator_affects_only_its_key() {
+        let sound_font =
+            modulated_soundfont(vec![(0x000A, GeneratorType::INITIAL_ATTENUATION, 960, 0, 0)], Vec::new());
+        let settings = SynthesizerSettings::new(44100);
+        let mut reference = Synthesizer::new(&sound_font, &settings).unwrap();
+        let mut modulated = Synthesizer::new(&sound_font, &settings).unwrap();
+        for synthesizer in [&mut reference, &mut modulated] {
+            synthesizer.note_on(0, 60, 100);
+            synthesizer.note_on(0, 72, 100);
+            render_block(synthesizer);
+        }
+
+        modulated.process_midi_message(0, 0xA0, 60, 100);
+        render_block(&mut reference);
+        render_block(&mut modulated);
+        assert!(voice_gain(&modulated, 60) < 0.1 * voice_gain(&reference, 60));
+        assert_eq!(voice_gain(&modulated, 72), voice_gain(&reference, 72));
+    }
+
+    #[test]
+    fn velocity_modulator_changes_note_on_destination() {
+        // Velocity -> attack time: +15875 timecents at full velocity, from 1 ms to about 9 s.
+        let sound_font = modulated_soundfont(
+            vec![(0x0002, GeneratorType::ATTACK_VOLUME_ENVELOPE, 16000, 0, 0)],
+            Vec::new(),
+        );
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sound_font, &settings).unwrap();
+        synthesizer.note_on(0, 60, 127);
+        synthesizer.note_on(0, 72, 40);
+        for _ in 0..16 {
+            render_block(&mut synthesizer);
+        }
+        assert!(voice_gain(&synthesizer, 60) < 0.1 * voice_gain(&synthesizer, 72));
+    }
+
     #[test]
     fn gs_reset_restores_default_drum_channel() {
         let settings = SynthesizerSettings::new(44100);

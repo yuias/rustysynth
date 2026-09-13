@@ -5,20 +5,39 @@ use crate::instrument_region::InstrumentRegion;
 use crate::loop_mode::LoopMode;
 use crate::preset_region::PresetRegion;
 use crate::soundfont_math::SoundFontMath;
+use crate::voice_modulators::GeneratorOffsets;
 
 #[non_exhaustive]
 pub(crate) struct RegionPair<'a> {
     pub(crate) preset: &'a PresetRegion,
     pub(crate) instrument: &'a InstrumentRegion,
+    offsets: Option<&'a GeneratorOffsets>,
 }
 
 impl<'a> RegionPair<'a> {
     pub(crate) fn new(preset: &'a PresetRegion, instrument: &'a InstrumentRegion) -> Self {
-        Self { preset, instrument }
+        Self {
+            preset,
+            instrument,
+            offsets: None,
+        }
+    }
+
+    /// Returns the same region pair with modulator offsets added to every generator.
+    pub(crate) fn with_offsets(&self, offsets: &'a GeneratorOffsets) -> RegionPair<'a> {
+        Self {
+            preset: self.preset,
+            instrument: self.instrument,
+            offsets: Some(offsets),
+        }
     }
 
     fn gs(&self, i: usize) -> i32 {
-        self.preset.gs[i] as i32 + self.instrument.gs[i] as i32
+        let value = self.preset.gs[i] as i32 + self.instrument.gs[i] as i32;
+        match self.offsets {
+            Some(offsets) => value + offsets[i].round() as i32,
+            None => value,
+        }
     }
 
     pub(crate) fn get_sample_start(&self) -> i32 {
