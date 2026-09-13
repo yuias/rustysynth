@@ -24,6 +24,8 @@ mod soundfont_version;
 mod zone;
 mod zone_info;
 
+#[cfg(test)] mod test_util;
+
 mod bi_quad_filter;
 mod channel;
 mod envelope_stage;
