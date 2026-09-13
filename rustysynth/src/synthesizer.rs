@@ -590,6 +590,7 @@ impl Synthesizer {
     ///   Master Coarse Tune (04 04)
     /// - GM System On (7E xx 09 01) → reset
     /// - GS Reset (41 10 42 12 40 00 7F 00 41) → reset
+    /// - GS Use for Rhythm Part (41 10 42 12 40 1x 15 vv) and Scale Tuning (41 10 42 12 40 1x 40 ...)
     /// - XG System On (43 10 4C 00 00 7E 00) → reset
     ///
     /// The data slice should NOT include the leading F0 or trailing F7.
@@ -677,21 +678,22 @@ impl Synthesizer {
             return;
         }
 
+        // Use for Rhythm Part: 40 1X 15 [0 = off, 1 = map 1, 2 = map 2] [checksum]
+        // Both drum maps select the drum bank, since SoundFonts have a single drum bank.
+        if addr_high == 0x40 && (addr_mid & 0xF0) == 0x10 && addr_low == 0x15 {
+            if let Some(&value) = addr_and_data.get(3) {
+                let midi_channel = Synthesizer::gs_part_to_channel(addr_mid);
+                self.channels[midi_channel].set_percussion_channel(value != 0);
+            }
+            return;
+        }
+
         // Scale Tuning: 40 1X 40 [12 data bytes] [checksum]
         // X = GS part number (0-15)
         if addr_high == 0x40 && (addr_mid & 0xF0) == 0x10 && addr_low == 0x40 {
             let remaining = &addr_and_data[3..];
             if remaining.len() >= 12 {
-                let part = (addr_mid & 0x0F) as usize;
-                // GS part-to-channel mapping:
-                // Part 0 → Ch10 (drums), Part 1 → Ch1, ..., Part 9 → Ch9,
-                // Part 10 → Ch11, ..., Part 15 → Ch16
-                let midi_channel = match part {
-                    0 => 9,                  // drums
-                    1..=9 => part - 1,       // Ch1-Ch9
-                    10..=15 => part,         // Ch11-Ch16
-                    _ => return,
-                };
+                let midi_channel = Synthesizer::gs_part_to_channel(addr_mid);
 
                 let mut tuning = [0.0_f32; 12];
                 for i in 0..12 {
@@ -703,6 +705,16 @@ impl Synthesizer {
                 }
             }
             return;
+        }
+    }
+
+    /// Maps the part nibble of a GS part address (40 1X ..) to a MIDI channel.
+    /// Part 0 is channel 10, parts 1-9 are channels 1-9 and parts 10-15 are channels 11-16.
+    fn gs_part_to_channel(addr_mid: u8) -> usize {
+        match (addr_mid & 0x0F) as usize {
+            0 => 9,
+            part @ 1..=9 => part - 1,
+            part => part,
         }
     }
 
@@ -1021,6 +1033,18 @@ mod tests {
         synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
         assert_eq!(synthesizer.channels[9].get_bank_number(), 128);
         assert_eq!(synthesizer.channels[10].get_bank_number(), 0);
+    }
+
+    #[test]
+    fn gs_use_for_rhythm_part_switches_drum_channel() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 1 is channel 1 (index 0); part 0 is channel 10.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x15, 0x02, 0x18]);
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x10, 0x15, 0x00, 0x1B]);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 128);
+        assert_eq!(synthesizer.channels[9].get_bank_number(), 0);
     }
 
     #[test]
