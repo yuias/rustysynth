@@ -11,6 +11,7 @@ mod instrument;
 mod instrument_info;
 mod instrument_region;
 mod loop_mode;
+mod modulator_source;
 mod preset;
 mod preset_info;
 mod preset_region;
