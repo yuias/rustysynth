@@ -134,6 +134,10 @@ impl MidiFileSequencer {
                             data2 as i32,
                         );
                     }
+                    Message::SysEx { bytes } => {
+                        let index = Message::sysex_index(bytes);
+                        self.synthesizer.process_sysex(&midi_file.sysex_data[index]);
+                    }
                     Message::LoopStart if self.play_loop => self.loop_index = self.msg_index,
                     Message::LoopEnd if self.play_loop => {
                         self.current_time = midi_file.times[self.loop_index];
@@ -207,5 +211,67 @@ impl MidiFileSequencer {
         }
 
         self.speed = value;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::synthesizer_settings::SynthesizerSettings;
+    use crate::test_util::sine_soundfont;
+
+    /// Builds a single-track, format-0 SMF with a fixed division and the given
+    /// track body. An End of Track meta event is appended automatically.
+    fn build_midi_file(track_data: &[u8]) -> Vec<u8> {
+        let mut track_data = track_data.to_vec();
+        track_data.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_i32.to_be_bytes());
+        bytes.extend_from_slice(&0_i16.to_be_bytes());
+        bytes.extend_from_slice(&1_i16.to_be_bytes());
+        bytes.extend_from_slice(&480_i16.to_be_bytes());
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(track_data.len() as i32).to_be_bytes());
+        bytes.extend_from_slice(&track_data);
+        bytes
+    }
+
+    #[test]
+    fn gs_scale_tuning_sysex_reaches_synthesizer() {
+        // GS DT1: Scale Tuning for part 1 (-> MIDI channel 0), 12 bytes at +10 cents each.
+        let mut payload = vec![0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x40];
+        payload.extend(std::iter::repeat(0x4A_u8).take(12));
+        payload.push(0x00); // checksum byte (unchecked by the synthesizer)
+
+        let mut track = vec![0x00, 0xF0, (payload.len() + 1) as u8];
+        track.extend_from_slice(&payload);
+        track.push(0xF7);
+
+        let midi_file = Arc::new(MidiFile::new(&mut Cursor::new(build_midi_file(&track))).unwrap());
+
+        let settings = SynthesizerSettings::new(44100);
+        let synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        let mut sequencer = MidiFileSequencer::new(synthesizer);
+
+        sequencer.play(&midi_file, false);
+
+        let block_size = sequencer.get_synthesizer().get_block_size();
+        let mut left = vec![0_f32; block_size];
+        let mut right = vec![0_f32; block_size];
+        sequencer.render(&mut left, &mut right);
+
+        assert_eq!(
+            sequencer.get_synthesizer().get_scale_tuning(0),
+            Some(&[10.0_f32; 12])
+        );
+        // Unaffected channel keeps the default (untouched) tuning.
+        assert_eq!(
+            sequencer.get_synthesizer().get_scale_tuning(1),
+            Some(&[0.0_f32; 12])
+        );
     }
 }

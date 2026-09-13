@@ -13,6 +13,11 @@ use crate::MidiFileLoopType;
 pub(crate) enum Message {
     Normal { status: u8, data1: u8, data2: u8 },
     TempoChange { bytes: [u8; 3] },
+    // The payload lives in `MidiFile::sysex_data`; `bytes` is a big-endian u24
+    // index into it. An index keeps this variant within the 4-byte budget
+    // (see `test_message_size`) while indices remain stable across
+    // `merge_tracks` reordering and the `LoopPoint` insertion into track 0.
+    SysEx { bytes: [u8; 3] },
     LoopStart,
     LoopEnd,
     EndOfTrack,
@@ -72,6 +77,33 @@ impl Message {
         let bytes = tempo.to_be_bytes()[1..].try_into().unwrap();
         Self::TempoChange { bytes }
     }
+
+    /// Builds a message referencing a SysEx payload at `index` in `MidiFile::sysex_data`.
+    /// Fails if `index` does not fit in the u24 the message can carry, which would
+    /// require a MIDI file with over 16 million SysEx events.
+    fn sysex(index: usize) -> Result<Self, MidiFileError> {
+        if index > 0xFF_FFFF {
+            return Err(MidiFileError::InvalidChunkData(FourCC::from_bytes(
+                *b"MTrk",
+            )));
+        }
+        let bytes = (index as u32).to_be_bytes()[1..].try_into().unwrap();
+        Ok(Self::SysEx { bytes })
+    }
+
+    pub(crate) fn sysex_index(bytes: [u8; 3]) -> usize {
+        u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]) as usize
+    }
+}
+
+/// How tick positions in a track map to elapsed time.
+#[derive(Clone, Copy, Debug)]
+enum TimeDivision {
+    /// Ticks per quarter note; `Message::TempoChange` events scale elapsed time.
+    TicksPerQuarterNote(i32),
+    /// SMPTE time code: a tick is a fixed `1 / (fps * ticks_per_frame)` seconds,
+    /// regardless of any tempo meta events.
+    Smpte { fps: f64, ticks_per_frame: f64 },
 }
 
 /// Represents a standard MIDI file.
@@ -80,6 +112,10 @@ impl Message {
 pub struct MidiFile {
     pub(crate) messages: Vec<Message>,
     pub(crate) times: Vec<f64>,
+    // Side table for SysEx payloads (without the leading F0 or trailing F7),
+    // referenced by `Message::SysEx` via index. Kept out of `Message` to
+    // preserve its 4-byte size.
+    pub(crate) sysex_data: Vec<Box<[u8]>>,
 }
 
 impl MidiFile {
@@ -134,13 +170,35 @@ impl MidiFile {
         }
 
         let track_count = BinaryReader::read_i16_big_endian(reader)? as i32;
-        let resolution = BinaryReader::read_i16_big_endian(reader)? as i32;
+        let division = BinaryReader::read_i16_big_endian(reader)?;
+
+        // A negative division means SMPTE time code: the high byte (as a signed
+        // value) is the negated frames-per-second, and the low byte is the
+        // number of ticks per frame. Positive division is the usual
+        // ticks-per-quarter-note.
+        let time_division = if division < 0 {
+            let [fps_code, ticks_per_frame] = division.to_be_bytes();
+            let fps_code = fps_code as i8;
+            let fps = if fps_code == -29 {
+                29.97
+            } else {
+                -(fps_code as f64)
+            };
+            TimeDivision::Smpte {
+                fps,
+                ticks_per_frame: ticks_per_frame as f64,
+            }
+        } else {
+            TimeDivision::TicksPerQuarterNote(division as i32)
+        };
 
         let mut message_lists: Vec<Vec<Message>> = Vec::new();
         let mut tick_lists: Vec<Vec<i32>> = Vec::new();
+        let mut sysex_data: Vec<Box<[u8]>> = Vec::new();
 
         for _i in 0..track_count {
-            let (message_list, tick_list) = MidiFile::read_track(reader, loop_type)?;
+            let (message_list, tick_list) =
+                MidiFile::read_track(reader, loop_type, &mut sysex_data)?;
             message_lists.push(message_list);
             tick_lists.push(tick_list);
         }
@@ -167,14 +225,41 @@ impl MidiFile {
             _ => (),
         }
 
-        let (messages, times) = MidiFile::merge_tracks(&message_lists, &tick_lists, resolution);
+        let (messages, times) = MidiFile::merge_tracks(&message_lists, &tick_lists, time_division);
 
-        Ok(Self { messages, times })
+        Ok(Self {
+            messages,
+            times,
+            sysex_data,
+        })
     }
 
     fn discard_data<R: Read>(reader: &mut R) -> Result<(), MidiFileError> {
         let size = BinaryReader::read_i32_variable_length(reader)? as usize;
         BinaryReader::discard_data(reader, size)?;
+        Ok(())
+    }
+
+    /// Reads a variable-length size prefix followed by that many bytes.
+    fn read_sized_data<R: Read>(reader: &mut R) -> Result<Vec<u8>, MidiFileError> {
+        let size = BinaryReader::read_i32_variable_length(reader)? as usize;
+        let mut data = vec![0_u8; size];
+        reader.read_exact(&mut data)?;
+        Ok(data)
+    }
+
+    /// Stores a SysEx payload and appends a referencing message at `tick`.
+    fn emit_sysex(
+        sysex_data: &mut Vec<Box<[u8]>>,
+        messages: &mut Vec<Message>,
+        ticks: &mut Vec<i32>,
+        tick: i32,
+        payload: Vec<u8>,
+    ) -> Result<(), MidiFileError> {
+        let index = sysex_data.len();
+        sysex_data.push(payload.into_boxed_slice());
+        messages.push(Message::sysex(index)?);
+        ticks.push(tick);
         Ok(())
     }
 
@@ -194,6 +279,7 @@ impl MidiFile {
     fn read_track<R: Read>(
         reader: &mut R,
         loop_type: MidiFileLoopType,
+        sysex_data: &mut Vec<Box<[u8]>>,
     ) -> Result<(Vec<Message>, Vec<i32>), MidiFileError> {
         let chunk_type = BinaryReader::read_four_cc(reader)?;
         if chunk_type != b"MTrk" {
@@ -212,13 +298,30 @@ impl MidiFile {
         let mut tick: i32 = 0;
         let mut last_status: u8 = 0;
 
+        // An F0 packet with no trailing F7 is completed by one or more later F7
+        // packets. Holds the accumulated payload (without the F0) while waiting.
+        let mut pending_sysex: Option<Vec<u8>> = None;
+
         loop {
             let delta = BinaryReader::read_i32_variable_length(reader)?;
             let first = BinaryReader::read_u8(reader)?;
 
             tick += delta;
 
+            // Anything other than an F7 continuation means a pending F0 packet
+            // was never terminated (e.g. a malformed file, or a new F0 starting
+            // before the previous one closed). Flush it as-is rather than
+            // silently dropping a GS/XG reset split oddly across packets.
+            if first != 0xF7 {
+                if let Some(payload) = pending_sysex.take() {
+                    MidiFile::emit_sysex(sysex_data, &mut messages, &mut ticks, tick, payload)?;
+                }
+            }
+
             if (first & 128) == 0 {
+                // With no running status (e.g. right after a SysEx event, which cancels it per
+                // the SMF spec), last_status is 0 and the bytes become a message with status 0
+                // that the synthesizer ignores. Malformed files keep loading as before.
                 let command = last_status & 0xF0;
                 if command == 0xC0 || command == 0xD0 {
                     messages.push(Message::common1(last_status, first));
@@ -233,8 +336,41 @@ impl MidiFile {
             }
 
             match first {
-                0xF0 => MidiFile::discard_data(reader)?,
-                0xF7 => MidiFile::discard_data(reader)?,
+                0xF0 => {
+                    let mut data = MidiFile::read_sized_data(reader)?;
+                    if data.last() == Some(&0xF7) {
+                        data.pop();
+                        MidiFile::emit_sysex(sysex_data, &mut messages, &mut ticks, tick, data)?;
+                    } else {
+                        pending_sysex = Some(data);
+                    }
+                    // SysEx cancels running status per the SMF spec.
+                    last_status = 0;
+                    continue;
+                }
+                0xF7 => {
+                    let data = MidiFile::read_sized_data(reader)?;
+                    if let Some(mut payload) = pending_sysex.take() {
+                        payload.extend_from_slice(&data);
+                        if payload.last() == Some(&0xF7) {
+                            payload.pop();
+                            MidiFile::emit_sysex(
+                                sysex_data,
+                                &mut messages,
+                                &mut ticks,
+                                tick,
+                                payload,
+                            )?;
+                        } else {
+                            pending_sysex = Some(payload);
+                        }
+                    }
+                    // A standalone F7 with no preceding F0 is an escape packet of
+                    // raw bytes rather than a SysEx continuation; there is no
+                    // consumer for that, so it's discarded.
+                    last_status = 0;
+                    continue;
+                }
                 0xFF => match BinaryReader::read_u8(reader)? {
                     0x2F => {
                         BinaryReader::read_u8(reader)?;
@@ -277,7 +413,7 @@ impl MidiFile {
     fn merge_tracks(
         message_lists: &[Vec<Message>],
         tick_lists: &[Vec<i32>],
-        resolution: i32,
+        time_division: TimeDivision,
     ) -> (Vec<Message>, Vec<f64>) {
         let mut merged_messages: Vec<Message> = Vec::new();
         let mut merged_times: Vec<f64> = Vec::new();
@@ -309,15 +445,26 @@ impl MidiFile {
 
             let next_tick = tick_lists[min_index as usize][indices[min_index as usize]];
             let delta_tick = next_tick - current_tick;
-            let delta_time = 60.0 / (resolution as f64 * tempo) * delta_tick as f64;
+            let delta_time = match time_division {
+                TimeDivision::TicksPerQuarterNote(resolution) => {
+                    60.0 / (resolution as f64 * tempo) * delta_tick as f64
+                }
+                TimeDivision::Smpte {
+                    fps,
+                    ticks_per_frame,
+                } => delta_tick as f64 / (fps * ticks_per_frame),
+            };
 
             current_tick += delta_tick;
             current_time += delta_time;
 
             let message = message_lists[min_index as usize][indices[min_index as usize]];
             if let Message::TempoChange { bytes } = message {
-                let tempo_i32 = i32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
-                tempo = 60000000.0 / tempo_i32 as f64;
+                // Tempo meta events don't affect SMPTE-timed files.
+                if let TimeDivision::TicksPerQuarterNote(_) = time_division {
+                    let tempo_i32 = i32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
+                    tempo = 60000000.0 / tempo_i32 as f64;
+                }
             } else {
                 merged_messages.push(message);
                 merged_times.push(current_time);
@@ -338,10 +485,119 @@ impl MidiFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_message_size() {
         // Avoid increasing the size of the Message type
         assert_eq!(size_of::<Message>(), 4);
+    }
+
+    /// Builds a single-track, format-0 SMF with the given division and track body.
+    /// An End of Track meta event is appended automatically.
+    fn build_midi_file(division: i16, mut track_data: Vec<u8>) -> Vec<u8> {
+        track_data.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6_i32.to_be_bytes());
+        bytes.extend_from_slice(&0_i16.to_be_bytes());
+        bytes.extend_from_slice(&1_i16.to_be_bytes());
+        bytes.extend_from_slice(&division.to_be_bytes());
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(track_data.len() as i32).to_be_bytes());
+        bytes.extend_from_slice(&track_data);
+        bytes
+    }
+
+    fn parse(division: i16, track_data: Vec<u8>) -> Result<MidiFile, MidiFileError> {
+        let bytes = build_midi_file(division, track_data);
+        MidiFile::new(&mut Cursor::new(bytes))
+    }
+
+    #[test]
+    fn f0_sysex_with_trailing_f7_yields_payload_without_f7() {
+        let payload = [0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41];
+
+        let mut track = vec![0x00, 0xF0, (payload.len() + 1) as u8];
+        track.extend_from_slice(&payload);
+        track.push(0xF7);
+
+        let midi_file = parse(480, track).unwrap();
+
+        assert_eq!(midi_file.times[0], 0.0);
+        match midi_file.messages[0] {
+            Message::SysEx { bytes } => {
+                let index = Message::sysex_index(bytes);
+                assert_eq!(&*midi_file.sysex_data[index], &payload[..]);
+            }
+            _ => panic!("expected a SysEx message"),
+        }
+    }
+
+    #[test]
+    fn split_f0_f7_sysex_is_reassembled() {
+        let payload = [0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41];
+        let (first_part, second_part) = payload.split_at(5);
+
+        let mut track = vec![0x00, 0xF0, first_part.len() as u8];
+        track.extend_from_slice(first_part);
+        track.push(0x00);
+        track.push(0xF7);
+        track.push((second_part.len() + 1) as u8);
+        track.extend_from_slice(second_part);
+        track.push(0xF7);
+
+        let midi_file = parse(480, track).unwrap();
+
+        // Only one reassembled SysEx message, not two fragments.
+        let sysex_count = midi_file
+            .messages
+            .iter()
+            .filter(|m| matches!(m, Message::SysEx { .. }))
+            .count();
+        assert_eq!(sysex_count, 1);
+
+        match midi_file.messages[0] {
+            Message::SysEx { bytes } => {
+                let index = Message::sysex_index(bytes);
+                assert_eq!(&*midi_file.sysex_data[index], &payload[..]);
+            }
+            _ => panic!("expected a SysEx message"),
+        }
+    }
+
+    #[test]
+    fn running_status_is_not_reused_after_sysex() {
+        let track = vec![
+            0x00, 0x90, 0x3C,
+            0x64, // Note On, ch0, key 60, velocity 100 (sets running status)
+            0x00, 0xF0, 0x05, 0x7E, 0x7F, 0x09, 0x01, 0xF7, // GM System On
+            0x00, 0x3E,
+            0x64, // Bare data bytes: would be a Note On only if running status survived
+        ];
+
+        let midi_file = parse(480, track).unwrap();
+        let note_ons = midi_file
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Normal { status: 0x90, .. }))
+            .count();
+        assert_eq!(note_ons, 1);
+    }
+
+    #[test]
+    fn smpte_division_uses_fixed_seconds_per_tick_and_ignores_tempo() {
+        // -25 fps, 40 ticks/frame => 1000 ticks/sec => 1 ms/tick.
+        let division = i16::from_be_bytes([0xE7, 0x28]);
+
+        let track = vec![
+            0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // Tempo meta event (must be ignored)
+            0x87, 0x68, 0x90, 0x3C, 0x64, // Note On 1000 ticks later
+        ];
+
+        let midi_file = parse(division, track).unwrap();
+
+        assert_eq!(midi_file.times[0], 1.0);
     }
 }
