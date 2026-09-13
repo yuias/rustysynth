@@ -146,7 +146,8 @@ impl Oscillator {
     }
 
     /// 4-point Hermite interpolation for looping samples.
-    /// All indices wrap within the loop region [start_loop, end_loop).
+    /// Once playback enters the loop region [start_loop, end_loop), the forward taps
+    /// wrap to start_loop and x0 at start_loop wraps to end_loop - 1.
     fn fill_block_continuous(
         &mut self,
         data: &[i16],
@@ -157,6 +158,7 @@ impl Oscillator {
         let end_loop_fp = (self.end_loop as i64) << Oscillator::FRAC_BITS;
         let loop_length = (self.end_loop - self.start_loop) as i64;
         let loop_length_fp = loop_length << Oscillator::FRAC_BITS;
+        let start = self.start as usize;
         let sl = self.start_loop as usize;
         let el = self.end_loop as usize;
         let ll = loop_length as usize;
@@ -168,7 +170,13 @@ impl Oscillator {
 
             let index = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
 
-            let i0 = if index > sl { index - 1 } else { el - 1 };
+            let i0 = if index == sl {
+                el - 1
+            } else if index > start {
+                index - 1
+            } else {
+                start
+            };
             let mut i2 = index + 1;
             if i2 >= el { i2 -= ll; }
             let mut i3 = index + 2;
@@ -197,5 +205,39 @@ impl Oscillator {
         let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
         let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
         (((c3 * frac + c2) * frac + c1) * frac + x1) as f32 * Self::SAMPLE_RECIP as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ramp(len: usize) -> Vec<i16> {
+        let mut data: Vec<i16> = (0..len).map(|i| (i * 100) as i16).collect();
+        data.extend_from_slice(&[0_i16; 3]);
+        data
+    }
+
+    // Plays the sample at half speed so every other output sample is interpolated at frac = 0.5.
+    fn half_speed(loop_mode: LoopMode, start_loop: i32, end_loop: i32, end: i32) -> Oscillator {
+        let settings = SynthesizerSettings::new(44100);
+        let mut osc = Oscillator::new(&settings);
+        osc.start(loop_mode, 22050, 0, end, start_loop, end_loop, 60, 0, 0, 100);
+        osc
+    }
+
+    #[test]
+    fn pre_loop_section_uses_preceding_sample_as_x0() {
+        let data = ramp(40);
+        let mut osc = half_speed(LoopMode::Continuous, 20, 40, 40);
+        let mut block = [0_f32; 32];
+        assert!(osc.process(&data, &mut block, 60.0, 60.0));
+
+        // Hermite reproduces a linear ramp exactly when all four taps lie on it.
+        // Index 0 clamps x0 to the start sample, so skip it.
+        for (t, value) in block.iter().enumerate().skip(2).take(30) {
+            let expected = t as f32 * 50.0 / 32768.0;
+            assert!((value - expected).abs() < 1e-6, "t = {}: {} != {}", t, value, expected);
+        }
     }
 }
