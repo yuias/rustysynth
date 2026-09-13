@@ -10,7 +10,7 @@ use crate::preset::Preset;
 use crate::sample_header::SampleHeader;
 use crate::soundfont_info::SoundFontInfo;
 use crate::soundfont_parameters::SoundFontParameters;
-use crate::soundfont_sampledata::SoundFontSampleData;
+use crate::soundfont_sampledata::{SoundFontSampleData, INTERPOLATION_PADDING};
 use crate::LoopMode;
 
 /// Reperesents a SoundFont.
@@ -62,7 +62,8 @@ impl SoundFont {
             warnings: Vec::new(),
         };
 
-        sound_font.sanitize();
+        let sample_len = sound_font.wave_data.len() - INTERPOLATION_PADDING;
+        sound_font.warnings = SoundFont::sanitize(&mut sound_font.instruments, sample_len);
 
         Ok(sound_font)
     }
@@ -73,11 +74,13 @@ impl SoundFont {
     /// - https://github.com/sinshu/rustysynth/issues/22
     /// - https://github.com/sinshu/rustysynth/issues/33
     /// - https://github.com/sinshu/rustysynth/pull/51
-    fn sanitize(&mut self) {
-        let wave_len = self.wave_data.len();
+    ///
+    /// `wave_len` must exclude the interpolation padding; otherwise a region ending inside
+    /// the padding passes and the interpolator reads past the buffer.
+    fn sanitize(instruments: &mut [Instrument], wave_len: usize) -> Vec<String> {
         let mut warnings = Vec::new();
 
-        for instrument in &mut self.instruments {
+        for instrument in instruments.iter_mut() {
             let before = instrument.regions.len();
             let inst_name = instrument.name.clone();
             instrument.regions.retain(|region| {
@@ -148,7 +151,7 @@ impl SoundFont {
             }
         }
 
-        self.warnings = warnings;
+        warnings
     }
 
     /// Gets the information of the SoundFont.
@@ -190,6 +193,8 @@ impl SoundFont {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generator_type::GeneratorType;
+    use crate::instrument_region::InstrumentRegion;
 
     use std::{fs::File, path::PathBuf};
 
@@ -198,6 +203,31 @@ mod tests {
             .parent()
             .unwrap()
             .join("samples")
+    }
+
+    fn region(start: i32, end: i32) -> InstrumentRegion {
+        InstrumentRegion {
+            gs: [0; GeneratorType::COUNT],
+            sample_start: start,
+            sample_end: end,
+            sample_start_loop: start,
+            sample_end_loop: end,
+            sample_sample_rate: 44100,
+            sample_original_pitch: 60,
+            sample_pitch_correction: 0,
+        }
+    }
+
+    #[test]
+    fn sanitize_rejects_region_end_at_or_past_sample_length() {
+        let mut instruments = vec![Instrument {
+            name: "test".to_string(),
+            regions: vec![region(0, 99), region(0, 100), region(0, 101)],
+        }];
+        let warnings = SoundFont::sanitize(&mut instruments, 100);
+        assert_eq!(instruments[0].regions.len(), 1);
+        assert_eq!(instruments[0].regions[0].get_sample_end(), 99);
+        assert_eq!(warnings.len(), 2);
     }
 
     #[test]

@@ -7,6 +7,10 @@ use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
 use crate::read_counter::ReadCounter;
 
+/// Zero samples appended to the sample data so that the Hermite interpolator can read
+/// `data[index + 2]` at the last sample of a region without a bounds check.
+pub(crate) const INTERPOLATION_PADDING: usize = 3;
+
 #[non_exhaustive]
 pub(crate) struct SoundFontSampleData {
     pub bits_per_sample: i32,
@@ -58,9 +62,7 @@ impl SoundFontSampleData {
             return Err(SoundFontError::UnsupportedSampleFormat);
         }
 
-        // Add padding for cubic interpolation (Hermite needs data[index+2]).
-        // Without this, the last sample's end+1 could exceed the buffer.
-        wave_data.extend_from_slice(&[0_i16; 3]);
+        wave_data.extend_from_slice(&[0_i16; INTERPOLATION_PADDING]);
 
         Ok(Self {
             bits_per_sample: 16,
