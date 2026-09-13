@@ -4,6 +4,7 @@ use crate::error::SoundFontError;
 use crate::generator::Generator;
 use crate::generator_type::GeneratorType;
 use crate::loop_mode::LoopMode;
+use crate::modulator::{self, Modulator, ModulatorDropCounts, ModulatorLevel};
 use crate::sample_header::SampleHeader;
 use crate::soundfont_math::SoundFontMath;
 use crate::zone::Zone;
@@ -23,6 +24,7 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 #[non_exhaustive]
 pub struct InstrumentRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],
+    pub(crate) modulators: Box<[Modulator]>,
     pub(crate) sample_start: i32,
     pub(crate) sample_end: i32,
     pub(crate) sample_start_loop: i32,
@@ -36,8 +38,10 @@ impl InstrumentRegion {
     fn new(
         instrument_id: usize,
         global: &Zone,
+        global_modulators: &[Modulator],
         local: &Zone,
         samples: &[SampleHeader],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Self, SoundFontError> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY as usize] = 13500;
@@ -77,8 +81,16 @@ impl InstrumentRegion {
         }
         let sample = &samples[sample_id];
 
+        let local_modulators = modulator::validate_zone(
+            &local.modulators,
+            ModulatorLevel::Instrument,
+            modulator_drop_counts,
+        );
+        let modulators = modulator::merge(global_modulators, local_modulators);
+
         Ok(Self {
             gs,
+            modulators,
             sample_start: sample.start,
             sample_end: sample.end,
             sample_start_loop: sample.start_loop,
@@ -93,6 +105,7 @@ impl InstrumentRegion {
         instrument_id: usize,
         zones: &[Zone],
         samples: &[SampleHeader],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Vec<InstrumentRegion>, SoundFontError> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
@@ -100,6 +113,13 @@ impl InstrumentRegion {
         {
             // The first one is the global zone.
             let global = &zones[0];
+            // Validated once here, not per local zone, so a dropped global
+            // modulator is counted once rather than once per region.
+            let global_modulators = modulator::validate_zone(
+                &global.modulators,
+                ModulatorLevel::Instrument,
+                modulator_drop_counts,
+            );
 
             // The global zone is regarded as the base setting of subsequent zones.
             let count = zones.len() - 1;
@@ -108,8 +128,10 @@ impl InstrumentRegion {
                 regions.push(InstrumentRegion::new(
                     instrument_id,
                     global,
+                    &global_modulators,
                     &zones[i + 1],
                     samples,
+                    modulator_drop_counts,
                 )?);
             }
 
@@ -122,8 +144,10 @@ impl InstrumentRegion {
                 regions.push(InstrumentRegion::new(
                     instrument_id,
                     &Zone::empty(),
+                    &[],
                     zone,
                     samples,
+                    modulator_drop_counts,
                 )?);
             }
 

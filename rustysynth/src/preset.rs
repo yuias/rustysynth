@@ -2,6 +2,7 @@
 
 use crate::error::SoundFontError;
 use crate::instrument::Instrument;
+use crate::modulator::ModulatorDropCounts;
 use crate::preset_info::PresetInfo;
 use crate::preset_region::PresetRegion;
 use crate::zone::Zone;
@@ -25,6 +26,7 @@ impl Preset {
         preset_id: usize,
         zones: &[Zone],
         instruments: &[Instrument],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Self, SoundFontError> {
         let name = info.name.clone();
 
@@ -36,7 +38,8 @@ impl Preset {
         let span_start = info.zone_start_index as usize;
         let span_end = span_start + zone_count as usize;
         let zone_span = &zones[span_start..span_end];
-        let regions = PresetRegion::create(preset_id, zone_span, instruments)?;
+        let regions =
+            PresetRegion::create(preset_id, zone_span, instruments, modulator_drop_counts)?;
 
         Ok(Self {
             name,
@@ -53,6 +56,7 @@ impl Preset {
         infos: &[PresetInfo],
         zones: &[Zone],
         instruments: &[Instrument],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Vec<Preset>, SoundFontError> {
         if infos.len() <= 1 {
             return Err(SoundFontError::PresetNotFound);
@@ -63,7 +67,13 @@ impl Preset {
 
         let mut presets: Vec<Preset> = Vec::new();
         for (preset_id, info) in infos.iter().take(count).enumerate() {
-            presets.push(Preset::new(info, preset_id, zones, instruments)?);
+            presets.push(Preset::new(
+                info,
+                preset_id,
+                zones,
+                instruments,
+                modulator_drop_counts,
+            )?);
         }
 
         Ok(presets)

@@ -4,6 +4,7 @@ use crate::error::SoundFontError;
 use crate::generator::Generator;
 use crate::generator_type::GeneratorType;
 use crate::instrument::Instrument;
+use crate::modulator::{self, Modulator, ModulatorDropCounts, ModulatorLevel};
 use crate::soundfont_math::SoundFontMath;
 use crate::zone::Zone;
 
@@ -22,6 +23,7 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 #[non_exhaustive]
 pub struct PresetRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],
+    pub(crate) modulators: Box<[Modulator]>,
     pub(crate) instrument: usize,
 }
 
@@ -29,8 +31,10 @@ impl PresetRegion {
     fn new(
         preset_id: usize,
         global: &Zone,
+        global_modulators: &[Modulator],
         local: &Zone,
         samples: &[Instrument],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Self, SoundFontError> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::KEY_RANGE as usize] = 0x7F00;
@@ -52,8 +56,16 @@ impl PresetRegion {
             });
         }
 
+        let local_modulators = modulator::validate_zone(
+            &local.modulators,
+            ModulatorLevel::Preset,
+            modulator_drop_counts,
+        );
+        let modulators = modulator::merge(global_modulators, local_modulators);
+
         Ok(Self {
             gs,
+            modulators,
             instrument: instrument_id,
         })
     }
@@ -62,6 +74,7 @@ impl PresetRegion {
         preset_id: usize,
         zones: &[Zone],
         instruments: &[Instrument],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Vec<PresetRegion>, SoundFontError> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
@@ -69,6 +82,13 @@ impl PresetRegion {
         {
             // The first one is the global zone.
             let global = &zones[0];
+            // Validated once here, not per local zone, so a dropped global
+            // modulator is counted once rather than once per region.
+            let global_modulators = modulator::validate_zone(
+                &global.modulators,
+                ModulatorLevel::Preset,
+                modulator_drop_counts,
+            );
 
             // The global zone is regarded as the base setting of subsequent zones.
             let count = zones.len() - 1;
@@ -77,8 +97,10 @@ impl PresetRegion {
                 regions.push(PresetRegion::new(
                     preset_id,
                     global,
+                    &global_modulators,
                     &zones[i + 1],
                     instruments,
+                    modulator_drop_counts,
                 )?);
             }
 
@@ -91,8 +113,10 @@ impl PresetRegion {
                 regions.push(PresetRegion::new(
                     preset_id,
                     &Zone::empty(),
+                    &[],
                     zone,
                     instruments,
+                    modulator_drop_counts,
                 )?);
             }
 

@@ -43,6 +43,14 @@ struct PresetInfoRecord {
 /// The id generator (sampleID / instrument) is appended by the builder, not the caller.
 type ZoneSpec = (Vec<(u16, i16)>, usize);
 
+/// A modulator record: (source, destination, amount, amount_source, transform),
+/// mirroring `Modulator`'s fields in that order.
+pub(crate) type ModulatorRecord = (u16, u16, i16, u16, u16);
+
+/// A zone specification for the modulator-aware builder helpers: generators,
+/// modulator records, and the resource index (sample/instrument) the zone binds to.
+pub(crate) type ZoneSpecWithModulators = (Vec<(u16, i16)>, Vec<ModulatorRecord>, usize);
+
 /// Incrementally assembles a well-formed SF2 file in memory.
 ///
 /// Usage: add samples, then instruments (referencing sample indices), then presets
@@ -53,11 +61,19 @@ pub(crate) struct SoundFontBuilder {
 
     ibag: Vec<(u16, u16)>,
     igen: Vec<(u16, i16)>,
+    imod: Vec<ModulatorRecord>,
     instruments: Vec<InstrumentInfoRecord>,
 
     pbag: Vec<(u16, u16)>,
     pgen: Vec<(u16, i16)>,
+    pmod: Vec<ModulatorRecord>,
     presets: Vec<PresetInfoRecord>,
+
+    /// Test-only corruption knobs: extra raw bytes appended after the real
+    /// records when writing the imod/pmod chunk, to produce a size that isn't
+    /// a multiple of 10. Must stay even (see `chunk`'s doc comment).
+    imod_extra_bytes: usize,
+    pmod_extra_bytes: usize,
 }
 
 impl SoundFontBuilder {
@@ -67,10 +83,14 @@ impl SoundFontBuilder {
             sample_headers: Vec::new(),
             ibag: Vec::new(),
             igen: Vec::new(),
+            imod: Vec::new(),
             instruments: Vec::new(),
             pbag: Vec::new(),
             pgen: Vec::new(),
+            pmod: Vec::new(),
             presets: Vec::new(),
+            imod_extra_bytes: 0,
+            pmod_extra_bytes: 0,
         }
     }
 
@@ -116,11 +136,49 @@ impl SoundFontBuilder {
 
         for (generators, sample_index) in zones {
             let gen_index = self.igen.len() as u16;
-            self.ibag.push((gen_index, 0));
+            let mod_index = self.imod.len() as u16;
+            self.ibag.push((gen_index, mod_index));
             self.igen.extend(Self::ordered_generators(
                 generators,
-                (GeneratorType::SAMPLE_ID, sample_index as i16),
+                Some((GeneratorType::SAMPLE_ID, sample_index as i16)),
             ));
+        }
+
+        self.instruments.push(InstrumentInfoRecord {
+            name: name.to_string(),
+            zone_start_index,
+        });
+
+        self.instruments.len() - 1
+    }
+
+    /// Like `instrument`, but zones may also carry modulator records, and an
+    /// optional global zone (no sampleID generator) can precede them.
+    pub(crate) fn instrument_with_modulators(
+        &mut self,
+        name: &str,
+        global: Option<(Vec<(u16, i16)>, Vec<ModulatorRecord>)>,
+        zones: Vec<ZoneSpecWithModulators>,
+    ) -> usize {
+        let zone_start_index = self.ibag.len() as u16;
+
+        if let Some((generators, modulators)) = global {
+            let gen_index = self.igen.len() as u16;
+            let mod_index = self.imod.len() as u16;
+            self.ibag.push((gen_index, mod_index));
+            self.igen.extend(Self::ordered_generators(generators, None));
+            self.imod.extend(modulators);
+        }
+
+        for (generators, modulators, sample_index) in zones {
+            let gen_index = self.igen.len() as u16;
+            let mod_index = self.imod.len() as u16;
+            self.ibag.push((gen_index, mod_index));
+            self.igen.extend(Self::ordered_generators(
+                generators,
+                Some((GeneratorType::SAMPLE_ID, sample_index as i16)),
+            ));
+            self.imod.extend(modulators);
         }
 
         self.instruments.push(InstrumentInfoRecord {
@@ -145,10 +203,11 @@ impl SoundFontBuilder {
 
         for (generators, instrument_index) in zones {
             let gen_index = self.pgen.len() as u16;
-            self.pbag.push((gen_index, 0));
+            let mod_index = self.pmod.len() as u16;
+            self.pbag.push((gen_index, mod_index));
             self.pgen.extend(Self::ordered_generators(
                 generators,
-                (GeneratorType::INSTRUMENT, instrument_index as i16),
+                Some((GeneratorType::INSTRUMENT, instrument_index as i16)),
             ));
         }
 
@@ -162,9 +221,76 @@ impl SoundFontBuilder {
         self.presets.len() - 1
     }
 
+    /// Like `preset`, but zones may also carry modulator records, and an
+    /// optional global zone (no instrument generator) can precede them.
+    pub(crate) fn preset_with_modulators(
+        &mut self,
+        name: &str,
+        bank: i32,
+        patch: i32,
+        global: Option<(Vec<(u16, i16)>, Vec<ModulatorRecord>)>,
+        zones: Vec<ZoneSpecWithModulators>,
+    ) -> usize {
+        let zone_start_index = self.pbag.len() as u16;
+
+        if let Some((generators, modulators)) = global {
+            let gen_index = self.pgen.len() as u16;
+            let mod_index = self.pmod.len() as u16;
+            self.pbag.push((gen_index, mod_index));
+            self.pgen.extend(Self::ordered_generators(generators, None));
+            self.pmod.extend(modulators);
+        }
+
+        for (generators, modulators, instrument_index) in zones {
+            let gen_index = self.pgen.len() as u16;
+            let mod_index = self.pmod.len() as u16;
+            self.pbag.push((gen_index, mod_index));
+            self.pgen.extend(Self::ordered_generators(
+                generators,
+                Some((GeneratorType::INSTRUMENT, instrument_index as i16)),
+            ));
+            self.pmod.extend(modulators);
+        }
+
+        self.presets.push(PresetInfoRecord {
+            name: name.to_string(),
+            bank,
+            patch,
+            zone_start_index,
+        });
+
+        self.presets.len() - 1
+    }
+
+    /// Test-only corruption knob: overrides an already-added instrument zone's
+    /// modulator bag index (0-based within `ibag`), to exercise out-of-range handling.
+    pub(crate) fn set_instrument_zone_modulator_index(
+        &mut self,
+        zone_index: usize,
+        modulator_index: u16,
+    ) {
+        self.ibag[zone_index].1 = modulator_index;
+    }
+
+    /// Test-only corruption knob: appends `extra_bytes` zero bytes to the imod
+    /// chunk payload, to make its size not a multiple of 10. Must be even (see
+    /// `chunk`'s doc comment); 2 is the natural choice.
+    pub(crate) fn corrupt_imod_size(&mut self, extra_bytes: usize) {
+        self.imod_extra_bytes = extra_bytes;
+    }
+
+    /// Same as `corrupt_imod_size`, but for the pmod chunk.
+    pub(crate) fn corrupt_pmod_size(&mut self, extra_bytes: usize) {
+        self.pmod_extra_bytes = extra_bytes;
+    }
+
     /// Orders a zone's generators per spec: key range and velocity range (when present)
-    /// come first, then the rest in caller-provided order, then the id generator last.
-    fn ordered_generators(mut generators: Vec<(u16, i16)>, terminal: (u16, i16)) -> Vec<(u16, i16)> {
+    /// come first, then the rest in caller-provided order, then the id generator last
+    /// (omitted for a global zone, which has no sampleID/instrument generator).
+    fn ordered_generators(
+        mut generators: Vec<(u16, i16)>,
+        terminal: Option<(u16, i16)>,
+    ) -> Vec<(u16, i16)> {
         let mut ordered = Vec::with_capacity(generators.len() + 1);
         for range_generator in [GeneratorType::KEY_RANGE, GeneratorType::VELOCITY_RANGE] {
             if let Some(pos) = generators.iter().position(|(t, _)| *t == range_generator) {
@@ -172,28 +298,36 @@ impl SoundFontBuilder {
             }
         }
         ordered.extend(generators);
-        ordered.push(terminal);
+        if let Some(terminal) = terminal {
+            ordered.push(terminal);
+        }
         ordered
     }
 
     /// Serializes the accumulated samples/instruments/presets into a complete
     /// RIFF/sfbk SoundFont 2 file.
     pub(crate) fn build(mut self) -> Vec<u8> {
-        // Terminal ibag/igen records, and the "EOI" instrument info record.
+        // Terminal ibag/igen/imod records, and the "EOI" instrument info record.
         let instrument_zone_count = self.ibag.len() as u16;
         let ibag_terminal_gen_index = self.igen.len() as u16;
-        self.ibag.push((ibag_terminal_gen_index, 0));
+        let ibag_terminal_mod_index = self.imod.len() as u16;
+        self.ibag
+            .push((ibag_terminal_gen_index, ibag_terminal_mod_index));
         self.igen.push((0, 0));
+        self.imod.push((0, 0, 0, 0, 0));
         self.instruments.push(InstrumentInfoRecord {
             name: "EOI".to_string(),
             zone_start_index: instrument_zone_count,
         });
 
-        // Terminal pbag/pgen records, and the "EOP" preset info record.
+        // Terminal pbag/pgen/pmod records, and the "EOP" preset info record.
         let preset_zone_count = self.pbag.len() as u16;
         let pbag_terminal_gen_index = self.pgen.len() as u16;
-        self.pbag.push((pbag_terminal_gen_index, 0));
+        let pbag_terminal_mod_index = self.pmod.len() as u16;
+        self.pbag
+            .push((pbag_terminal_gen_index, pbag_terminal_mod_index));
         self.pgen.push((0, 0));
+        self.pmod.push((0, 0, 0, 0, 0));
         self.presets.push(PresetInfoRecord {
             name: "EOP".to_string(),
             bank: 0,
@@ -216,16 +350,22 @@ impl SoundFontBuilder {
 
         let sdta = list_chunk(b"sdta", vec![chunk(b"smpl", wave_bytes(&self.smpl))]);
 
+        let mut pmod_data = mod_bytes(&self.pmod);
+        pmod_data.extend(std::iter::repeat(0_u8).take(self.pmod_extra_bytes));
+
+        let mut imod_data = mod_bytes(&self.imod);
+        imod_data.extend(std::iter::repeat(0_u8).take(self.imod_extra_bytes));
+
         let pdta = list_chunk(
             b"pdta",
             vec![
                 chunk(b"phdr", phdr_bytes(&self.presets)),
                 chunk(b"pbag", bag_bytes(&self.pbag)),
-                chunk(b"pmod", terminal_modulator()),
+                chunk(b"pmod", pmod_data),
                 chunk(b"pgen", gen_bytes(&self.pgen)),
                 chunk(b"inst", inst_bytes(&self.instruments)),
                 chunk(b"ibag", bag_bytes(&self.ibag)),
-                chunk(b"imod", terminal_modulator()),
+                chunk(b"imod", imod_data),
                 chunk(b"igen", gen_bytes(&self.igen)),
                 chunk(b"shdr", shdr_bytes(&self.sample_headers)),
             ],
@@ -321,10 +461,16 @@ fn gen_bytes(generators: &[(u16, i16)]) -> Vec<u8> {
     data
 }
 
-/// A single all-zero terminal modulator record. The parser discards pmod/imod
-/// contents outright, but a real terminal record is included for spec fidelity.
-fn terminal_modulator() -> Vec<u8> {
-    vec![0_u8; 10]
+fn mod_bytes(modulators: &[ModulatorRecord]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(modulators.len() * 10);
+    for (source, destination, amount, amount_source, transform) in modulators {
+        data.extend_from_slice(&source.to_le_bytes());
+        data.extend_from_slice(&destination.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&amount_source.to_le_bytes());
+        data.extend_from_slice(&transform.to_le_bytes());
+    }
+    data
 }
 
 fn phdr_bytes(presets: &[PresetInfoRecord]) -> Vec<u8> {
@@ -540,5 +686,220 @@ mod tests {
 
         assert!(left.iter().any(|&s| s.abs() > 1e-6));
         assert!(right.iter().any(|&s| s.abs() > 1e-6));
+    }
+
+    #[test]
+    fn instrument_zone_modulators_are_parsed_and_terminal_dropped() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+
+        let modulator: ModulatorRecord = (0x0081, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0);
+        let instrument_index = builder.instrument_with_modulators(
+            "Instrument",
+            None,
+            vec![(
+                vec![(GeneratorType::SAMPLE_MODES, 1)],
+                vec![modulator],
+                sample_index,
+            )],
+        );
+        builder.preset("Preset", 0, 0, vec![(Vec::new(), instrument_index)]);
+
+        let sound_font = load(builder.build());
+
+        assert!(sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_instruments()[0].get_regions()[0];
+        // Exactly the one real record: the builder's auto-appended terminal
+        // record must not show up here.
+        assert_eq!(region.modulators.len(), 1);
+        assert_eq!(region.modulators[0].source, 0x0081);
+        assert_eq!(
+            region.modulators[0].destination,
+            GeneratorType::VIBRATO_LFO_TO_PITCH
+        );
+        assert_eq!(region.modulators[0].amount, 50);
+    }
+
+    #[test]
+    fn malformed_imod_chunk_size_loads_with_warning() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+
+        let modulator: ModulatorRecord = (0x0081, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0);
+        let instrument_index = builder.instrument_with_modulators(
+            "Instrument",
+            None,
+            vec![(
+                vec![(GeneratorType::SAMPLE_MODES, 1)],
+                vec![modulator],
+                sample_index,
+            )],
+        );
+        builder.preset("Preset", 0, 0, vec![(Vec::new(), instrument_index)]);
+        builder.corrupt_imod_size(2);
+
+        // Malformed pmod/imod data must not fail loading.
+        let sound_font = load(builder.build());
+
+        assert!(!sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_instruments()[0].get_regions()[0];
+        assert!(region.modulators.is_empty());
+    }
+
+    #[test]
+    fn malformed_pmod_chunk_size_loads_with_warning() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+        let instrument_index = builder.instrument(
+            "Instrument",
+            vec![(vec![(GeneratorType::SAMPLE_MODES, 1)], sample_index)],
+        );
+
+        let modulator: ModulatorRecord = (0x0081, GeneratorType::PAN, 50, 0, 0);
+        builder.preset_with_modulators(
+            "Preset",
+            0,
+            0,
+            None,
+            vec![(Vec::new(), vec![modulator], instrument_index)],
+        );
+        builder.corrupt_pmod_size(2);
+
+        let sound_font = load(builder.build());
+
+        assert!(!sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_presets()[0].get_regions()[0];
+        assert!(region.modulators.is_empty());
+    }
+
+    #[test]
+    fn out_of_range_instrument_zone_modulator_index_loads_with_warning() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+
+        let modulator: ModulatorRecord = (0x0081, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0);
+        let instrument_index = builder.instrument_with_modulators(
+            "Instrument",
+            None,
+            vec![(
+                vec![(GeneratorType::SAMPLE_MODES, 1)],
+                vec![modulator],
+                sample_index,
+            )],
+        );
+        builder.preset("Preset", 0, 0, vec![(Vec::new(), instrument_index)]);
+        // Only one zone (index 0); point it past the end of imod (1 real record + terminal).
+        builder.set_instrument_zone_modulator_index(0, 999);
+
+        let sound_font = load(builder.build());
+
+        assert!(!sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_instruments()[0].get_regions()[0];
+        assert!(region.modulators.is_empty());
+    }
+
+    #[test]
+    fn instrument_region_merges_local_over_identical_global_modulator() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+
+        let shared_identity: ModulatorRecord = (0x0081, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0);
+        let overridden: ModulatorRecord = (0x0081, GeneratorType::VIBRATO_LFO_TO_PITCH, 75, 0, 0);
+        // SF2.04 default modulator #6 (CC10 pan -> PAN), unrelated identity.
+        let extra_global: ModulatorRecord = (0x028A, GeneratorType::PAN, 1000, 0, 0);
+
+        let instrument_index = builder.instrument_with_modulators(
+            "Instrument",
+            Some((Vec::new(), vec![shared_identity, extra_global])),
+            vec![(
+                vec![(GeneratorType::SAMPLE_MODES, 1)],
+                vec![overridden],
+                sample_index,
+            )],
+        );
+        builder.preset("Preset", 0, 0, vec![(Vec::new(), instrument_index)]);
+
+        let sound_font = load(builder.build());
+
+        assert!(sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_instruments()[0].get_regions()[0];
+        assert_eq!(region.modulators.len(), 2);
+        let vibrato = region
+            .modulators
+            .iter()
+            .find(|m| m.destination == GeneratorType::VIBRATO_LFO_TO_PITCH)
+            .unwrap();
+        assert_eq!(vibrato.amount, 75);
+        assert!(region
+            .modulators
+            .iter()
+            .any(|m| m.destination == GeneratorType::PAN && m.amount == 1000));
+    }
+
+    #[test]
+    fn preset_region_drops_sample_modes_destination_with_summary_warning() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+        let instrument_index = builder.instrument(
+            "Instrument",
+            vec![(vec![(GeneratorType::SAMPLE_MODES, 1)], sample_index)],
+        );
+
+        // Valid at the instrument level, but preset generators are relative
+        // offsets, so SAMPLE_MODES is not a modulatable preset destination.
+        let invalid: ModulatorRecord = (0x0081, GeneratorType::SAMPLE_MODES, 1, 0, 0);
+        builder.preset_with_modulators(
+            "Preset",
+            0,
+            0,
+            None,
+            vec![(Vec::new(), vec![invalid], instrument_index)],
+        );
+
+        let sound_font = load(builder.build());
+
+        assert!(!sound_font.get_warnings().is_empty());
+        let region = &sound_font.get_presets()[0].get_regions()[0];
+        assert!(region.modulators.is_empty());
+    }
+
+    #[test]
+    fn multiple_invalid_modulators_of_same_reason_produce_one_summary_warning() {
+        let mut builder = SoundFontBuilder::new();
+        let wave = sine_wave(32, 10000);
+        let sample_index = builder.sample("Sine", &wave, 44100, 60, 0, 32);
+
+        // CC6 (data entry MSB) and CC120 (all sound off) are both banned sources.
+        let banned_cc6: ModulatorRecord = (0x0086, GeneratorType::PAN, 1, 0, 0);
+        let banned_cc120: ModulatorRecord = (0x00F8, GeneratorType::PAN, 1, 0, 0);
+        let instrument_index = builder.instrument_with_modulators(
+            "Instrument",
+            None,
+            vec![(
+                vec![(GeneratorType::SAMPLE_MODES, 1)],
+                vec![banned_cc6, banned_cc120],
+                sample_index,
+            )],
+        );
+        builder.preset("Preset", 0, 0, vec![(Vec::new(), instrument_index)]);
+
+        let sound_font = load(builder.build());
+
+        let region = &sound_font.get_instruments()[0].get_regions()[0];
+        assert!(region.modulators.is_empty());
+
+        let banned_cc_warnings: Vec<&String> = sound_font
+            .get_warnings()
+            .iter()
+            .filter(|w| w.contains("banned MIDI CC"))
+            .collect();
+        assert_eq!(banned_cc_warnings.len(), 1);
+        assert!(banned_cc_warnings[0].contains('2'));
     }
 }

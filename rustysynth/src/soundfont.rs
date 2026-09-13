@@ -59,11 +59,13 @@ impl SoundFont {
             sample_headers: parameters.sample_headers,
             presets: parameters.presets,
             instruments: parameters.instruments,
-            warnings: Vec::new(),
+            warnings: parameters.warnings,
         };
 
         let sample_len = sound_font.wave_data.len() - INTERPOLATION_PADDING;
-        sound_font.warnings = SoundFont::sanitize(&mut sound_font.instruments, sample_len);
+        sound_font
+            .warnings
+            .extend(SoundFont::sanitize(&mut sound_font.instruments, sample_len));
 
         Ok(sound_font)
     }
@@ -208,6 +210,7 @@ mod tests {
     fn region(start: i32, end: i32) -> InstrumentRegion {
         InstrumentRegion {
             gs: [0; GeneratorType::COUNT],
+            modulators: Box::new([]),
             sample_start: start,
             sample_end: end,
             sample_start_loop: start,

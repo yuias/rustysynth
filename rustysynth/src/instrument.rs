@@ -3,6 +3,7 @@
 use crate::error::SoundFontError;
 use crate::instrument_info::InstrumentInfo;
 use crate::instrument_region::InstrumentRegion;
+use crate::modulator::ModulatorDropCounts;
 use crate::sample_header::SampleHeader;
 use crate::zone::Zone;
 
@@ -20,6 +21,7 @@ impl Instrument {
         instrument_id: usize,
         zones: &[Zone],
         samples: &[SampleHeader],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Self, SoundFontError> {
         let name = info.name.clone();
 
@@ -31,7 +33,8 @@ impl Instrument {
         let span_start = info.zone_start_index as usize;
         let span_end = span_start + zone_count as usize;
         let zone_span = &zones[span_start..span_end];
-        let regions = InstrumentRegion::create(instrument_id, zone_span, samples)?;
+        let regions =
+            InstrumentRegion::create(instrument_id, zone_span, samples, modulator_drop_counts)?;
 
         Ok(Self { name, regions })
     }
@@ -40,6 +43,7 @@ impl Instrument {
         infos: &[InstrumentInfo],
         zones: &[Zone],
         samples: &[SampleHeader],
+        modulator_drop_counts: &mut ModulatorDropCounts,
     ) -> Result<Vec<Instrument>, SoundFontError> {
         if infos.len() <= 1 {
             return Err(SoundFontError::InstrumentNotFound);
@@ -50,7 +54,13 @@ impl Instrument {
 
         let mut instruments: Vec<Instrument> = Vec::new();
         for (instrument_id, info) in infos.iter().take(count).enumerate() {
-            instruments.push(Instrument::new(info, instrument_id, zones, samples)?);
+            instruments.push(Instrument::new(
+                info,
+                instrument_id,
+                zones,
+                samples,
+                modulator_drop_counts,
+            )?);
         }
 
         Ok(instruments)
