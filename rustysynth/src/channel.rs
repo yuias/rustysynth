@@ -34,7 +34,7 @@ pub struct Channel {
 
     last_data_type: DataType,
 
-    // Phase 2: Additional CC fields
+    // Controllers stored for inspection; not all have an audible effect yet
     bank_lsb: i32,
     sostenuto_pedal: bool,
     soft_pedal: bool,
@@ -367,7 +367,7 @@ impl Channel {
         self.pitch_bend_raw
     }
 
-    // Phase 2: Additional CC setters
+    // Setters for controllers without dedicated handling above
     pub(crate) fn set_bank_lsb(&mut self, value: i32) {
         self.bank_lsb = value;
     }
@@ -485,7 +485,7 @@ impl Channel {
         self.is_percussion_channel
     }
 
-    // Phase 2: Additional CC getters
+    // Getters for controllers without dedicated handling above
     pub fn get_bank_lsb(&self) -> i32 {
         self.bank_lsb
     }
