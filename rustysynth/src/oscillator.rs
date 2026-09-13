@@ -158,6 +158,7 @@ impl Oscillator {
         let end_loop_fp = (self.end_loop as i64) << Oscillator::FRAC_BITS;
         let loop_length = (self.end_loop - self.start_loop) as i64;
         let loop_length_fp = loop_length << Oscillator::FRAC_BITS;
+        let start_loop_fp = (self.start_loop as i64) << Oscillator::FRAC_BITS;
         let start = self.start as usize;
         let sl = self.start_loop as usize;
         let el = self.end_loop as usize;
@@ -165,7 +166,8 @@ impl Oscillator {
 
         for sample in block.iter_mut() {
             if self.position_fp >= end_loop_fp {
-                self.position_fp -= loop_length_fp;
+                // A single subtraction is not enough when the pitch ratio exceeds a very short loop.
+                self.position_fp = start_loop_fp + (self.position_fp - end_loop_fp) % loop_length_fp;
             }
 
             let index = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
@@ -238,6 +240,19 @@ mod tests {
         for (t, value) in block.iter().enumerate().skip(2).take(30) {
             let expected = t as f32 * 50.0 / 32768.0;
             assert!((value - expected).abs() < 1e-6, "t = {}: {} != {}", t, value, expected);
+        }
+    }
+
+    #[test]
+    fn short_loop_with_high_pitch_stays_in_bounds() {
+        let data = ramp(8);
+        let settings = SynthesizerSettings::new(44100);
+        let mut osc = Oscillator::new(&settings);
+        osc.start(LoopMode::Continuous, 44100, 0, 8, 6, 7, 60, 0, 0, 100);
+        let mut block = [0_f32; 64];
+        // Four octaves up advances 16 samples per output sample over a 1-sample loop.
+        for _ in 0..4 {
+            assert!(osc.process(&data, &mut block, 108.0, 108.0));
         }
     }
 }
