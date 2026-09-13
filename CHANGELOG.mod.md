@@ -10,15 +10,18 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 - MIDI control changes:
   - Bank Select LSB (CC#32), stored and exposed; preset lookup still uses the MSB only.
   - Portamento Time (CC#5), Portamento On/Off (CC#65) and Portamento Control (CC#84).
-  - Sostenuto (CC#66), Soft Pedal (CC#67) and Variation Send (CC#94), stored and exposed without an audible effect yet.
+  - Sostenuto (CC#66): sustains only the notes whose keys are held when the pedal goes down.
+  - Soft Pedal (CC#67) and Variation Send (CC#94), stored and exposed without an audible effect yet.
   - Filter Resonance (CC#71) and Brightness (CC#74), applied to sounding voices.
   - Release Time (CC#72), Attack Time (CC#73) and Decay Time (CC#75), applied at note-on.
   - Channel Pressure, applied as vibrato depth (SF2 default modulator).
-- NRPN handling for GS/XG vibrato rate, depth and delay (MSB 1), applied at note-on.
+- NRPN handling for GS/XG tone parameters (MSB 1): vibrato rate, depth and delay, TVF cutoff and resonance, and TVA attack, decay and release.
 - SysEx processing via `Synthesizer::process_sysex`:
   - GM System On, GS Reset and XG System On.
   - Universal Master Volume, Master Fine Tune and Master Coarse Tune.
+  - GS Use for Rhythm Part (switches a part between melodic and drum banks).
   - GS Scale Tuning (all 12 notes of a part at once).
+- SysEx events in MIDI files are sent to the synthesizer during `MidiFileSequencer` playback. SysEx split across `F0`/`F7` packets is reassembled.
 - Master tuning: `Synthesizer::set_master_tune` / `get_master_tune`.
 - Per-channel scale tuning: `Synthesizer::set_scale_tuning` / `get_scale_tuning`.
 - `Synthesizer::set_percussion_channel` to switch a channel between melodic and drum banks at runtime.
@@ -45,3 +48,4 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 ## Fixed
 
 - A panic when the pitch ratio exceeded the length of a very short sample loop.
+- MIDI files with SMPTE time division were read as ticks per beat and played at the wrong speed.
