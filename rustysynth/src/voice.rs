@@ -77,6 +77,7 @@ pub(crate) struct Voice {
     // Some instruments require fast cutoff change, which can cause pop noise.
     // This is used to smooth out the cutoff frequency.
     smoothed_cutoff: f32,
+    filter_q_scale: f32,
 
     // Portamento: pitch offset that decays towards 0
     portamento_offset: f32,    // current pitch offset in semitones
@@ -125,6 +126,7 @@ impl Voice {
             instrument_reverb: 0_f32,
             instrument_chorus: 0_f32,
             smoothed_cutoff: 0_f32,
+            filter_q_scale: 1_f32,
             portamento_offset: 0_f32,
             portamento_speed: 0_f32,
             voice_state: VoiceState::Playing,
@@ -188,6 +190,7 @@ impl Voice {
         self.filter.set_low_pass_filter(self.cutoff, self.resonance, 1_f32);
 
         self.smoothed_cutoff = self.cutoff;
+        self.filter_q_scale = 1_f32;
 
         // Portamento: set initial pitch offset from source to target key
         if portamento_speed > 0.0 && portamento_source >= 0 && portamento_source != key {
@@ -272,7 +275,14 @@ impl Voice {
                 1_f32
             };
 
-            if self.dynamic_cutoff || brightness_cents != 0.0 {
+            // Keep updating until the filter has settled back after a controller returns
+            // to neutral; otherwise the last offset stays applied for the rest of the note.
+            let needs_update = self.dynamic_cutoff
+                || brightness_cents != 0.0
+                || q_scale != self.filter_q_scale
+                || self.smoothed_cutoff != self.cutoff;
+
+            if needs_update {
                 let mod_cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
                     + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
                 let total_cents = mod_cents + brightness_cents;
@@ -286,9 +296,7 @@ impl Voice {
 
                 self.filter
                     .set_low_pass_filter(self.smoothed_cutoff, self.resonance, q_scale);
-            } else if resonance_db != 0.0 {
-                self.filter
-                    .set_low_pass_filter(self.cutoff, self.resonance, q_scale);
+                self.filter_q_scale = q_scale;
             }
         }
         self.filter.process(&mut self.block[..]);
@@ -376,6 +384,11 @@ impl Voice {
 
     pub(crate) fn key(&self) -> i32 {
         self.key
+    }
+
+    #[cfg(test)]
+    pub(crate) fn filter_state(&self) -> (f32, f32, f32) {
+        (self.cutoff, self.smoothed_cutoff, self.filter_q_scale)
     }
 
     pub(crate) fn priority(&self) -> f32 {

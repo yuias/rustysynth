@@ -899,6 +899,32 @@ mod tests {
     }
 
     #[test]
+    fn filter_returns_to_region_cutoff_when_controllers_reset_to_neutral() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.note_on(0, 60, 127);
+
+        // CC#74 (brightness) and CC#71 (resonance) away from neutral, then back.
+        synthesizer.process_midi_message(0, 0xB0, 74, 0);
+        synthesizer.process_midi_message(0, 0xB0, 71, 100);
+        for _ in 0..8 {
+            render_block(&mut synthesizer);
+        }
+        let (cutoff, smoothed, q_scale) = synthesizer.voices.active_voices()[0].filter_state();
+        assert!(smoothed < cutoff);
+        assert!(q_scale > 1.0);
+
+        synthesizer.process_midi_message(0, 0xB0, 74, 64);
+        synthesizer.process_midi_message(0, 0xB0, 71, 64);
+        for _ in 0..8 {
+            render_block(&mut synthesizer);
+        }
+        let (cutoff, smoothed, q_scale) = synthesizer.voices.active_voices()[0].filter_state();
+        assert_eq!(smoothed, cutoff);
+        assert_eq!(q_scale, 1.0);
+    }
+
+    #[test]
     fn gs_reset_restores_default_drum_channel() {
         let settings = SynthesizerSettings::new(44100);
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
