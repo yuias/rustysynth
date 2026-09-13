@@ -576,7 +576,7 @@ impl Synthesizer {
             // Universal Real-Time
             0x7F => {
                 if data.len() >= 3 && data[2] == 0x04 {
-                    if data.len() >= 5 && data[3] == 0x01 {
+                    if data.len() >= 6 && data[3] == 0x01 {
                         // Master Volume: 7F xx 04 01 ll mm
                         let volume = ((data[5] as u16) << 7 | data[4] as u16) as f32 / 16383.0;
                         self.master_volume = volume;
@@ -859,7 +859,7 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::layered_soundfont;
+    use crate::test_util::{layered_soundfont, sine_soundfont};
 
     fn render_block(synthesizer: &mut Synthesizer) {
         let mut left = vec![0_f32; synthesizer.get_block_size()];
@@ -887,5 +887,15 @@ mod tests {
             .filter(|voice| voice.channel() == 0 && voice.key() == 60)
             .count();
         assert_eq!(new_voices, 2);
+    }
+
+    #[test]
+    fn truncated_master_volume_sysex_is_ignored() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        let volume = synthesizer.get_master_volume();
+
+        synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x7F]);
+        assert_eq!(synthesizer.get_master_volume(), volume);
     }
 }
