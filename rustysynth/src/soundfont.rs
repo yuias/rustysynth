@@ -166,7 +166,7 @@ impl SoundFont {
 
     /// Gets the sample data.
     pub fn get_wave_data(&self) -> &[i16] {
-        &self.wave_data[..]
+        &self.wave_data[..self.wave_data.len() - INTERPOLATION_PADDING]
     }
 
     /// Gets the samples of the SoundFont.
