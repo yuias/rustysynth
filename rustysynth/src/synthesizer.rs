@@ -939,6 +939,24 @@ mod tests {
         assert_eq!(q_scale, 1.0);
     }
 
+    fn region_cutoff_for_velocity(enable_velocity_to_filter_cutoff: bool, velocity: i32) -> f32 {
+        let mut settings = SynthesizerSettings::new(44100);
+        settings.enable_velocity_to_filter_cutoff = enable_velocity_to_filter_cutoff;
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.note_on(0, 60, velocity);
+        synthesizer.voices.active_voices()[0].filter_state().0
+    }
+
+    #[test]
+    fn velocity_to_filter_cutoff_follows_setting() {
+        let full = region_cutoff_for_velocity(true, 127);
+        assert_eq!(region_cutoff_for_velocity(false, 1), full);
+
+        // Two octaves down at velocity 0, so about 1/4 near velocity 1.
+        let soft = region_cutoff_for_velocity(true, 1);
+        assert!((soft / full - 0.25).abs() < 0.01, "ratio = {}", soft / full);
+    }
+
     #[test]
     fn gs_reset_restores_default_drum_channel() {
         let settings = SynthesizerSettings::new(44100);

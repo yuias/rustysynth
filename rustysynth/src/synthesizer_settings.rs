@@ -17,6 +17,10 @@ pub struct SynthesizerSettings {
     pub enable_reverb_and_chorus: bool,
     /// The shape of the volume envelope attack stage.
     pub volume_attack_curve: VolumeAttackCurve,
+    /// The value indicating whether the SF2 default modulator from note-on velocity to
+    /// filter cutoff is applied. It lowers the cutoff by up to two octaves for soft notes,
+    /// even for instruments that do not otherwise use the filter.
+    pub enable_velocity_to_filter_cutoff: bool,
 }
 
 impl SynthesizerSettings {
@@ -24,6 +28,7 @@ impl SynthesizerSettings {
     const DEFAULT_MAXIMUM_POLYPHONY: usize = 64;
     const DEFAULT_ENABLE_REVERB_AND_CHORUS: bool = true;
     const DEFAULT_VOLUME_ATTACK_CURVE: VolumeAttackCurve = VolumeAttackCurve::Cubic;
+    const DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF: bool = true;
 
     /// Initializes a new instance of synthesizer settings.
     ///
@@ -37,6 +42,8 @@ impl SynthesizerSettings {
             maximum_polyphony: SynthesizerSettings::DEFAULT_MAXIMUM_POLYPHONY,
             enable_reverb_and_chorus: SynthesizerSettings::DEFAULT_ENABLE_REVERB_AND_CHORUS,
             volume_attack_curve: SynthesizerSettings::DEFAULT_VOLUME_ATTACK_CURVE,
+            enable_velocity_to_filter_cutoff:
+                SynthesizerSettings::DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF,
         }
     }
 

@@ -87,6 +87,7 @@ pub(crate) struct Voice {
     /// Time elapsed in samples
     voice_length: usize,
     min_voice_length: usize,
+    enable_velocity_to_filter_cutoff: bool,
 }
 
 impl Voice {
@@ -132,6 +133,7 @@ impl Voice {
             voice_state: VoiceState::Playing,
             voice_length: 0,
             min_voice_length: (settings.sample_rate / 500) as usize,
+            enable_velocity_to_filter_cutoff: settings.enable_velocity_to_filter_cutoff,
         }
     }
 
@@ -159,7 +161,7 @@ impl Voice {
         // SF2 Default Modulator #2: Note-On Velocity → Filter Cutoff
         // Source: velocity, linear, unipolar, negative. Amount: -2400 cents.
         // At vel=0: cutoff reduced by 2400 cents (2 octaves). At vel=127: no change.
-        if velocity < 127 {
+        if self.enable_velocity_to_filter_cutoff && velocity < 127 {
             let vel_fc_cents = -2400.0 * (1.0 - velocity as f32 / 127.0);
             self.cutoff *= SoundFontMath::cents_to_multiplying_factor(vel_fc_cents);
         }
