@@ -185,7 +185,7 @@ impl Voice {
         RegionEx::start_modulation(&mut self.mod_lfo, region, key, velocity);
         RegionEx::start_oscillator(&mut self.oscillator, region);
         self.filter.clear_buffer();
-        self.filter.set_low_pass_filter(self.cutoff, self.resonance);
+        self.filter.set_low_pass_filter(self.cutoff, self.resonance, 1_f32);
 
         self.smoothed_cutoff = self.cutoff;
 
@@ -266,13 +266,10 @@ impl Voice {
             // Apply CC#71 (Resonance) as resonance offset in dB
             let resonance_db = channel_info.get_filter_resonance_db();
 
-            let effective_resonance = if resonance_db != 0.0 {
-                SoundFontMath::max(
-                    self.resonance * SoundFontMath::decibels_to_linear(resonance_db),
-                    0.001,
-                )
+            let q_scale = if resonance_db != 0.0 {
+                SoundFontMath::decibels_to_linear(resonance_db)
             } else {
-                self.resonance
+                1_f32
             };
 
             if self.dynamic_cutoff || brightness_cents != 0.0 {
@@ -288,10 +285,10 @@ impl Voice {
                 self.smoothed_cutoff = SoundFontMath::clamp(new_cutoff, lower_limit, upper_limit);
 
                 self.filter
-                    .set_low_pass_filter(self.smoothed_cutoff, effective_resonance);
+                    .set_low_pass_filter(self.smoothed_cutoff, self.resonance, q_scale);
             } else if resonance_db != 0.0 {
                 self.filter
-                    .set_low_pass_filter(self.cutoff, effective_resonance);
+                    .set_low_pass_filter(self.cutoff, self.resonance, q_scale);
             }
         }
         self.filter.process(&mut self.block[..]);
