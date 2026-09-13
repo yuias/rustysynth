@@ -353,6 +353,15 @@ impl Synthesizer {
         self.block_read = self.block_size;
     }
 
+    /// Handles GM/GS/XG system reset messages. Unlike `reset()`, this also restores
+    /// the default drum channel assignment, which a system reset defines.
+    fn reset_system(&mut self) {
+        for (i, channel) in self.channels.iter_mut().enumerate() {
+            channel.set_percussion_channel(i == Synthesizer::PERCUSSION_CHANNEL);
+        }
+        self.reset();
+    }
+
     /// Renders the waveform.
     ///
     /// # Arguments
@@ -569,7 +578,7 @@ impl Synthesizer {
                 // 7E xx 09 01 = GM System On
                 if data.len() >= 3 && data[1] <= 0x7F && data[2] == 0x09 {
                     if data.len() >= 4 && (data[3] == 0x01 || data[3] == 0x02 || data[3] == 0x03) {
-                        self.reset();
+                        self.reset_system();
                     }
                 }
             }
@@ -616,7 +625,7 @@ impl Synthesizer {
                     && data[5] == 0x7E
                     && data[6] == 0x00
                 {
-                    self.reset();
+                    self.reset_system();
                 }
             }
             _ => {}
@@ -636,7 +645,7 @@ impl Synthesizer {
         // GS Reset: 40 00 7F 00 [checksum]
         if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x7F {
             if addr_and_data.len() >= 4 && addr_and_data[3] == 0x00 {
-                self.reset();
+                self.reset_system();
             }
             return;
         }
@@ -887,6 +896,28 @@ mod tests {
             .filter(|voice| voice.channel() == 0 && voice.key() == 60)
             .count();
         assert_eq!(new_voices, 2);
+    }
+
+    #[test]
+    fn gs_reset_restores_default_drum_channel() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_percussion_channel(9, false);
+        synthesizer.set_percussion_channel(10, true);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
+        assert_eq!(synthesizer.channels[9].get_bank_number(), 128);
+        assert_eq!(synthesizer.channels[10].get_bank_number(), 0);
+    }
+
+    #[test]
+    fn plain_reset_keeps_configured_drum_channel() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_percussion_channel(10, true);
+
+        synthesizer.reset();
+        assert_eq!(synthesizer.channels[10].get_bank_number(), 128);
     }
 
     #[test]
