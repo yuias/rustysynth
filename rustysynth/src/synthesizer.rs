@@ -172,7 +172,7 @@ impl Synthesizer {
                 0x05 => channel_info.set_portamento_time(data2), // Portamento Time
                 0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
                 0x41 => channel_info.set_portamento_on(data2), // Portamento On/Off
-                0x42 => channel_info.set_sostenuto_pedal(data2), // Sostenuto
+                0x42 => self.set_sostenuto_pedal(channel, data2), // Sostenuto
                 0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
                 0x47 => channel_info.set_filter_resonance(data2), // Filter Resonance (CC#71)
                 0x48 => channel_info.set_release_time(data2), // Release Time (CC#72)
@@ -318,6 +318,20 @@ impl Synthesizer {
             for voice in self.voices.get_active_voices().iter_mut() {
                 if voice.channel() == channel {
                     voice.end();
+                }
+            }
+        }
+    }
+
+    fn set_sostenuto_pedal(&mut self, channel: i32, value: i32) {
+        let channel_info = &mut self.channels[channel as usize];
+        let was_down = channel_info.get_sostenuto_pedal();
+        channel_info.set_sostenuto_pedal(value);
+
+        if !was_down && channel_info.get_sostenuto_pedal() {
+            for voice in self.voices.get_active_voices().iter_mut() {
+                if voice.channel() == channel {
+                    voice.capture_sostenuto();
                 }
             }
         }
@@ -955,6 +969,46 @@ mod tests {
         // Two octaves down at velocity 0, so about 1/4 near velocity 1.
         let soft = region_cutoff_for_velocity(true, 1);
         assert!((soft / full - 0.25).abs() < 0.01, "ratio = {}", soft / full);
+    }
+
+    fn is_key_released(synthesizer: &Synthesizer, key: i32) -> bool {
+        synthesizer
+            .voices
+            .active_voices()
+            .iter()
+            .find(|voice| voice.key() == key)
+            .unwrap()
+            .is_released()
+    }
+
+    #[test]
+    fn sostenuto_sustains_only_notes_held_when_pedal_goes_down() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.process_midi_message(0, 0xB0, 66, 127);
+        synthesizer.note_on(0, 64, 100);
+        synthesizer.note_off(0, 60);
+        synthesizer.note_off(0, 64);
+        for _ in 0..4 {
+            render_block(&mut synthesizer);
+        }
+        assert!(!is_key_released(&synthesizer, 60));
+        assert!(is_key_released(&synthesizer, 64));
+
+        // Re-sending pedal down must not capture notes started in the meantime.
+        synthesizer.note_on(0, 67, 100);
+        synthesizer.process_midi_message(0, 0xB0, 66, 127);
+        synthesizer.note_off(0, 67);
+        for _ in 0..4 {
+            render_block(&mut synthesizer);
+        }
+        assert!(is_key_released(&synthesizer, 67));
+
+        synthesizer.process_midi_message(0, 0xB0, 66, 0);
+        render_block(&mut synthesizer);
+        assert!(is_key_released(&synthesizer, 60));
     }
 
     #[test]

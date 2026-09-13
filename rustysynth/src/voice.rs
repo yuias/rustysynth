@@ -87,6 +87,8 @@ pub(crate) struct Voice {
     /// Time elapsed in samples
     voice_length: usize,
     min_voice_length: usize,
+    // Set when the sostenuto pedal went down while this note's key was held.
+    sostenuto_captured: bool,
     enable_velocity_to_filter_cutoff: bool,
 }
 
@@ -133,6 +135,7 @@ impl Voice {
             voice_state: VoiceState::Playing,
             voice_length: 0,
             min_voice_length: (settings.sample_rate / 500) as usize,
+            sostenuto_captured: false,
             enable_velocity_to_filter_cutoff: settings.enable_velocity_to_filter_cutoff,
         }
     }
@@ -205,6 +208,7 @@ impl Voice {
 
         self.voice_state = VoiceState::Playing;
         self.voice_length = 0;
+        self.sostenuto_captured = false;
     }
 
     pub(crate) fn end(&mut self) {
@@ -353,13 +357,21 @@ impl Voice {
             return;
         }
 
-        if self.voice_state == VoiceState::ReleaseRequested && !channel_info.get_hold_pedal() {
+        let sustained = channel_info.get_hold_pedal()
+            || (self.sostenuto_captured && channel_info.get_sostenuto_pedal());
+
+        if self.voice_state == VoiceState::ReleaseRequested && !sustained {
             self.vol_env.release();
             self.mod_env.release();
             self.oscillator.release();
 
             self.voice_state = VoiceState::Released;
         }
+    }
+
+    /// Called when the sostenuto pedal goes down: only notes whose key is still held are sustained.
+    pub(crate) fn capture_sostenuto(&mut self) {
+        self.sostenuto_captured = self.voice_state == VoiceState::Playing;
     }
 
     pub(crate) fn block(&self) -> &Vec<f32> {
@@ -395,6 +407,11 @@ impl Voice {
             }
         }
         (start, self.portamento_offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_released(&self) -> bool {
+        self.voice_state == VoiceState::Released
     }
 
     #[cfg(test)]
