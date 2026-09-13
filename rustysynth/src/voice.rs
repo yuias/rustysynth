@@ -239,26 +239,20 @@ impl Voice {
         let mod_env_pitch = self.mod_env_to_pitch * self.mod_env.get_value();
         let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
-        let base_pitch = self.key as f32 + self.portamento_offset + mod_env_pitch
+        let base_pitch = self.key as f32 + mod_env_pitch
             + channel_pitch_change + master_tune + scale_tuning;
+
+        let (portamento_start, portamento_end) = self.advance_portamento();
 
         // Compute pitch at block boundaries for per-sample LFO interpolation
         let pitch_start = base_pitch
+            + portamento_start
             + vib_depth * self.vib_lfo.get_prev_value()
             + self.mod_lfo_to_pitch * self.mod_lfo.get_prev_value();
         let pitch_end = base_pitch
+            + portamento_end
             + vib_depth * self.vib_lfo.get_value()
             + self.mod_lfo_to_pitch * self.mod_lfo.get_value();
-
-        // Decay portamento offset towards 0
-        if self.portamento_speed > 0.0 && self.portamento_offset != 0.0 {
-            let decay = self.portamento_speed * self.block.len() as f32;
-            if self.portamento_offset > 0.0 {
-                self.portamento_offset = (self.portamento_offset - decay).max(0.0);
-            } else {
-                self.portamento_offset = (self.portamento_offset + decay).min(0.0);
-            }
-        }
         if !self.oscillator.process(data, &mut self.block[..], pitch_start, pitch_end) {
             return false;
         }
@@ -386,6 +380,21 @@ impl Voice {
         self.key
     }
 
+    /// Decays the portamento offset towards 0 by one block and returns the offsets at the
+    /// block start and end, so the oscillator interpolates the glide instead of stepping it.
+    fn advance_portamento(&mut self) -> (f32, f32) {
+        let start = self.portamento_offset;
+        if self.portamento_speed > 0.0 && self.portamento_offset != 0.0 {
+            let decay = self.portamento_speed * self.block.len() as f32;
+            if self.portamento_offset > 0.0 {
+                self.portamento_offset = (self.portamento_offset - decay).max(0.0);
+            } else {
+                self.portamento_offset = (self.portamento_offset + decay).min(0.0);
+            }
+        }
+        (start, self.portamento_offset)
+    }
+
     #[cfg(test)]
     pub(crate) fn filter_state(&self) -> (f32, f32, f32) {
         (self.cutoff, self.smoothed_cutoff, self.filter_q_scale)
@@ -397,5 +406,24 @@ impl Voice {
         } else {
             self.vol_env.get_priority()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portamento_offset_is_reported_at_both_block_boundaries() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut voice = Voice::new(&settings);
+        voice.portamento_offset = -12.0;
+        voice.portamento_speed = 0.5 / voice.block.len() as f32;
+
+        assert_eq!(voice.advance_portamento(), (-12.0, -11.5));
+        assert_eq!(voice.advance_portamento(), (-11.5, -11.0));
+
+        voice.portamento_offset = 0.25;
+        assert_eq!(voice.advance_portamento(), (0.25, 0.0));
     }
 }
