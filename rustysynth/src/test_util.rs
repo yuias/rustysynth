@@ -578,6 +578,32 @@ pub(crate) fn layered_soundfont() -> Arc<SoundFont> {
     load(builder.build())
 }
 
+/// Builds a SoundFont with one looped sine sample whose instrument zone and preset zone
+/// carry the given modulators.
+pub(crate) fn modulated_soundfont(
+    instrument_modulators: Vec<ModulatorRecord>,
+    preset_modulators: Vec<ModulatorRecord>,
+) -> Arc<SoundFont> {
+    let mut builder = SoundFontBuilder::new();
+
+    let wave = sine_wave(64, 12000);
+    let sample = builder.sample("Sine", &wave, 44100, 60, 0, 64);
+    let instrument = builder.instrument_with_modulators(
+        "Modulated Instrument",
+        None,
+        vec![(vec![(GeneratorType::SAMPLE_MODES, 1)], instrument_modulators, sample)],
+    );
+    builder.preset_with_modulators(
+        "Modulated Preset",
+        0,
+        0,
+        None,
+        vec![(Vec::new(), preset_modulators, instrument)],
+    );
+
+    load(builder.build())
+}
+
 fn load(bytes: Vec<u8>) -> Arc<SoundFont> {
     let mut cursor = Cursor::new(bytes);
     Arc::new(SoundFont::new(&mut cursor).expect("builder must produce a loadable SoundFont"))

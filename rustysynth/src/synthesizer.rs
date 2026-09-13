@@ -912,7 +912,8 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{layered_soundfont, sine_soundfont};
+    use crate::generator_type::GeneratorType;
+    use crate::test_util::{layered_soundfont, modulated_soundfont, sine_soundfont};
 
     fn render_block(synthesizer: &mut Synthesizer) {
         let mut left = vec![0_f32; synthesizer.get_block_size()];
@@ -1075,6 +1076,26 @@ mod tests {
         synthesizer.process_midi_message(0, 0xB0, 66, 0);
         render_block(&mut synthesizer);
         assert!(is_key_released(&synthesizer, 60));
+    }
+
+    #[test]
+    fn instrument_modulator_overrides_default_velocity_to_cutoff() {
+        // Same identity as the SF2 default, amount 0: turns the default off.
+        let sound_font = modulated_soundfont(
+            vec![(0x0102, GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY, 0, 0x0D02, 0)],
+            Vec::new(),
+        );
+        let cutoff_for = |enable_soundfont_modulators: bool| {
+            let mut settings = SynthesizerSettings::new(44100);
+            settings.enable_soundfont_modulators = enable_soundfont_modulators;
+            let mut synthesizer = Synthesizer::new(&sound_font, &settings).unwrap();
+            synthesizer.note_on(0, 60, 1);
+            synthesizer.voices.active_voices()[0].filter_state().0
+        };
+
+        let full = region_cutoff_for_velocity(true, 127);
+        assert_eq!(cutoff_for(true), full);
+        assert!(cutoff_for(false) < 0.3 * full);
     }
 
     #[test]

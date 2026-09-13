@@ -11,6 +11,7 @@ use crate::region_ex::RegionEx;
 use crate::region_pair::RegionPair;
 use crate::soundfont_math::SoundFontMath;
 use crate::synthesizer_settings::SynthesizerSettings;
+use crate::voice_modulators::{DefaultModulator, VoiceModulators};
 use crate::volume_envelope::VolumeEnvelope;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -90,6 +91,8 @@ pub(crate) struct Voice {
     // Set when the sostenuto pedal went down while this note's key was held.
     sostenuto_captured: bool,
     enable_velocity_to_filter_cutoff: bool,
+    enable_soundfont_modulators: bool,
+    modulators: VoiceModulators,
 }
 
 impl Voice {
@@ -137,12 +140,20 @@ impl Voice {
             min_voice_length: (settings.sample_rate / 500) as usize,
             sostenuto_captured: false,
             enable_velocity_to_filter_cutoff: settings.enable_velocity_to_filter_cutoff,
+            enable_soundfont_modulators: settings.enable_soundfont_modulators,
+            modulators: VoiceModulators::new(),
         }
     }
 
     pub(crate) fn start(&mut self, region: &RegionPair, channel_info: &Channel, channel: i32, key: i32, velocity: i32,
         portamento_source: i32, portamento_speed: f32) {
         self.exclusive_class = region.get_exclusive_class();
+        self.modulators.start(
+            &region.instrument.modulators,
+            &region.preset.modulators,
+            self.enable_soundfont_modulators,
+            self.enable_velocity_to_filter_cutoff,
+        );
         self.channel = channel;
         self.key = key;
         self.velocity = velocity;
@@ -153,6 +164,7 @@ impl Voice {
             let sample_attenuation = 0.4_f32 * region.get_initial_attenuation();
             let filter_attenuation = 0.5_f32 * region.get_initial_filter_q();
             let decibels = 2_f32 * SoundFontMath::linear_to_decibels(velocity as f32 / 127_f32)
+                * self.modulators.default_scale(DefaultModulator::VelocityToAttenuation)
                 - sample_attenuation
                 - filter_attenuation;
             self.note_gain = SoundFontMath::decibels_to_linear(decibels);
@@ -164,8 +176,10 @@ impl Voice {
         // SF2 Default Modulator #2: Note-On Velocity → Filter Cutoff
         // Source: velocity, linear, unipolar, negative. Amount: -2400 cents.
         // At vel=0: cutoff reduced by 2400 cents (2 octaves). At vel=127: no change.
-        if self.enable_velocity_to_filter_cutoff && velocity < 127 {
-            let vel_fc_cents = -2400.0 * (1.0 - velocity as f32 / 127.0);
+        let vel_fc_amount = -2400.0
+            * self.modulators.default_scale(DefaultModulator::VelocityToFilterCutoff);
+        if vel_fc_amount != 0.0 && velocity < 127 {
+            let vel_fc_cents = vel_fc_amount * (1.0 - velocity as f32 / 127.0);
             self.cutoff *= SoundFontMath::cents_to_multiplying_factor(vel_fc_cents);
         }
         self.resonance = SoundFontMath::decibels_to_linear(region.get_initial_filter_q());
@@ -240,10 +254,15 @@ impl Voice {
 
         // SF2 Default Modulator #10: Channel Pressure → Vibrato LFO Pitch Depth
         // Source: channel pressure, linear, unipolar, positive. Amount: 50 cents.
-        let pressure_vib = 0.01_f32 * 50.0 * channel_info.get_channel_pressure();
-        let vib_depth = 0.01_f32 * channel_info.get_modulation() + self.vib_lfo_to_pitch + pressure_vib;
+        let pressure_vib = 0.01_f32 * 50.0 * channel_info.get_channel_pressure()
+            * self.modulators.default_scale(DefaultModulator::ChannelPressureToVibrato);
+        let wheel_vib = 0.01_f32 * channel_info.get_modulation()
+            * self.modulators.default_scale(DefaultModulator::ModulationWheelToVibrato);
+        let vib_depth = wheel_vib + self.vib_lfo_to_pitch + pressure_vib;
         let mod_env_pitch = self.mod_env_to_pitch * self.mod_env.get_value();
-        let channel_pitch_change = channel_info.get_tune() + channel_info.get_pitch_bend();
+        let channel_pitch_change = channel_info.get_tune()
+            + channel_info.get_pitch_bend()
+                * self.modulators.default_scale(DefaultModulator::PitchWheelToFineTune);
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
         let base_pitch = self.key as f32 + mod_env_pitch
             + channel_pitch_change + master_tune + scale_tuning;
@@ -307,8 +326,17 @@ impl Voice {
         self.previous_chorus_send = self.current_chorus_send;
 
         // According to the GM spec, the following value should be squared.
-        let ve = channel_info.get_volume() * channel_info.get_expression();
-        let channel_gain = ve * ve;
+        // The square is the SF2 default CC7/CC11 modulators; their scales change the exponent.
+        let volume_scale = self.modulators.default_scale(DefaultModulator::VolumeToAttenuation);
+        let expression_scale =
+            self.modulators.default_scale(DefaultModulator::ExpressionToAttenuation);
+        let channel_gain = if volume_scale == 1_f32 && expression_scale == 1_f32 {
+            let ve = channel_info.get_volume() * channel_info.get_expression();
+            ve * ve
+        } else {
+            channel_info.get_volume().powf(2_f32 * volume_scale)
+                * channel_info.get_expression().powf(2_f32 * expression_scale)
+        };
 
         let mut mix_gain = self.note_gain * channel_gain * self.vol_env.get_value();
         if self.dynamic_volume {
@@ -317,7 +345,10 @@ impl Voice {
         }
 
         let angle =
-            (consts::PI / 200_f32) * (channel_info.get_pan() + self.instrument_pan + 50_f32);
+            (consts::PI / 200_f32) * (channel_info.get_pan()
+                * self.modulators.default_scale(DefaultModulator::PanToPan)
+                + self.instrument_pan
+                + 50_f32);
         if angle <= 0_f32 {
             self.current_mix_gain_left = mix_gain;
             self.current_mix_gain_right = 0_f32;
@@ -330,12 +361,16 @@ impl Voice {
         }
 
         self.current_reverb_send = SoundFontMath::clamp(
-            channel_info.get_reverb_send() + self.instrument_reverb,
+            channel_info.get_reverb_send()
+                * self.modulators.default_scale(DefaultModulator::ReverbSend)
+                + self.instrument_reverb,
             0_f32,
             1_f32,
         );
         self.current_chorus_send = SoundFontMath::clamp(
-            channel_info.get_chorus_send() + self.instrument_chorus,
+            channel_info.get_chorus_send()
+                * self.modulators.default_scale(DefaultModulator::ChorusSend)
+                + self.instrument_chorus,
             0_f32,
             1_f32,
         );

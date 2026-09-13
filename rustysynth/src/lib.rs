@@ -40,6 +40,7 @@ mod synthesizer;
 mod synthesizer_settings;
 mod voice;
 mod voice_collection;
+mod voice_modulators;
 mod volume_attack_curve;
 mod volume_envelope;
 

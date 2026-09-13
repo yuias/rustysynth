@@ -19,8 +19,12 @@ pub struct SynthesizerSettings {
     pub volume_attack_curve: VolumeAttackCurve,
     /// The value indicating whether the SF2 default modulator from note-on velocity to
     /// filter cutoff is applied. It lowers the cutoff by up to two octaves for soft notes,
-    /// even for instruments that do not otherwise use the filter.
+    /// even for instruments that do not otherwise use the filter. A SoundFont modulator with
+    /// the same definition still overrides this setting.
     pub enable_velocity_to_filter_cutoff: bool,
+    /// The value indicating whether modulators defined in the SoundFont are applied.
+    /// When disabled, only the SF2 default modulators are used.
+    pub enable_soundfont_modulators: bool,
 }
 
 impl SynthesizerSettings {
@@ -29,6 +33,7 @@ impl SynthesizerSettings {
     const DEFAULT_ENABLE_REVERB_AND_CHORUS: bool = true;
     const DEFAULT_VOLUME_ATTACK_CURVE: VolumeAttackCurve = VolumeAttackCurve::Cubic;
     const DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF: bool = true;
+    const DEFAULT_ENABLE_SOUNDFONT_MODULATORS: bool = true;
 
     /// Initializes a new instance of synthesizer settings.
     ///
@@ -44,6 +49,7 @@ impl SynthesizerSettings {
             volume_attack_curve: SynthesizerSettings::DEFAULT_VOLUME_ATTACK_CURVE,
             enable_velocity_to_filter_cutoff:
                 SynthesizerSettings::DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF,
+            enable_soundfont_modulators: SynthesizerSettings::DEFAULT_ENABLE_SOUNDFONT_MODULATORS,
         }
     }
 
