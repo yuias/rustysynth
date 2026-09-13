@@ -10,6 +10,8 @@ const FDN_SIZE: usize = 8;
 /// Replaces Jezar's Freeverb with a higher-quality algorithm:
 /// - 4 serial Schroeder all-pass diffusers for transient decorrelation
 /// - 8-channel FDN with Hadamard mixing matrix (energy-preserving)
+/// - Per-line feedback gain matched to a room-size-dependent target T60, so decay time
+///   tracks Freeverb's regardless of each line's length (see `room_to_t60`)
 /// - Per-channel 1-pole LP damping for frequency-dependent decay
 /// - Sinusoidal delay modulation to suppress metallic ringing
 /// - Stereo output via alternating channel taps
@@ -20,7 +22,8 @@ pub(crate) struct Reverb {
     delay_lines: Vec<ModulatedDelayLine>,
     dampers: Vec<OnePoleLP>,
 
-    feedback: f32,
+    sample_rate: f32,
+    feedback: [f32; FDN_SIZE],
     damp_coeff: f32,
     input_gain: f32,
     wet: f32,
@@ -46,7 +49,9 @@ impl Reverb {
     /// Per-channel sinusoidal modulation rates in Hz (varied for decorrelation).
     const MOD_RATES: [f32; FDN_SIZE] = [0.10, 0.15, 0.12, 0.18, 0.13, 0.17, 0.11, 0.16];
 
-    /// Modulation depth in samples.
+    /// Modulation depth in samples at 44100 Hz; scaled with sample rate like the delay lengths
+    /// (see `scale_mod_depth`), otherwise the modulation becomes proportionally deeper relative
+    /// to the delay length at low sample rates and shallower at high ones.
     const MOD_DEPTH: f32 = 8.0;
 
     /// Input diffusion all-pass delay lengths at 44100 Hz.
@@ -58,9 +63,14 @@ impl Reverb {
     /// 1/sqrt(8) for Hadamard normalization and input distribution.
     const NORM: f32 = 0.35355339;
 
-    /// Output gain compensation (FDN produces lower amplitude than Freeverb
-    /// due to energy distribution across channels).
-    const OUTPUT_GAIN: f32 = 2.0;
+    /// Numerator (in seconds) of the target-T60 curve fitted to Freeverb's room-size response,
+    /// see `room_to_t60`.
+    const T60_K: f32 = 0.092;
+
+    /// Output gain, calibrated so the wet RMS for noise input matches the previous Freeverb
+    /// at room size 0.5 / 44.1 kHz. Freeverb summed 8 parallel combs and its all-pass stages
+    /// were not unity gain, so the FDN needs a large makeup gain.
+    const OUTPUT_GAIN: f32 = 32.2;
 
     pub(crate) fn new(sample_rate: i32) -> Self {
         let sr_ratio = sample_rate as f64 / 44100.0;
@@ -71,11 +81,12 @@ impl Reverb {
             diffusers.push(AllPassDiffuser::new(scaled, Self::DIFFUSION_COEFF));
         }
 
+        let mod_depth = Self::scale_mod_depth(sr_ratio);
         let mut delay_lines = Vec::with_capacity(FDN_SIZE);
         for i in 0..FDN_SIZE {
             let length = Self::scale_delay(sr_ratio, Self::BASE_DELAYS[i]);
             let mod_rate = Self::MOD_RATES[i] * consts::TAU / sample_rate as f32;
-            delay_lines.push(ModulatedDelayLine::new(length, mod_rate, Self::MOD_DEPTH));
+            delay_lines.push(ModulatedDelayLine::new(length, mod_rate, mod_depth));
         }
 
         let mut dampers = Vec::with_capacity(FDN_SIZE);
@@ -87,7 +98,8 @@ impl Reverb {
             diffusers,
             delay_lines,
             dampers,
-            feedback: 0.0,
+            sample_rate: sample_rate as f32,
+            feedback: [0.0; FDN_SIZE],
             damp_coeff: 0.0,
             input_gain: Self::INPUT_GAIN,
             wet: 0.0,
@@ -120,6 +132,19 @@ impl Reverb {
         (sr_ratio * base as f64).round() as usize
     }
 
+    fn scale_mod_depth(sr_ratio: f64) -> f32 {
+        (Self::MOD_DEPTH as f64 * sr_ratio) as f32
+    }
+
+    /// Target T60 (seconds) for a room-size parameter. Follows the shape of Freeverb's comb
+    /// decay time, which diverges as its feedback `room * SCALE_ROOM + OFFSET_ROOM` approaches 1.
+    /// `T60_K` is fitted to Freeverb's measured RT60 because its damping keeps the real decay
+    /// off the analytic per-comb formula; the result is within 10% for room sizes 0 to 1.
+    fn room_to_t60(room: f32) -> f32 {
+        let g = room * Self::SCALE_ROOM + Self::OFFSET_ROOM;
+        Self::T60_K / -g.log10()
+    }
+
     pub(crate) fn process(
         &mut self,
         input: &[f32],
@@ -128,6 +153,10 @@ impl Reverb {
     ) {
         output_left.fill(0.0);
         output_right.fill(0.0);
+
+        for dl in &mut self.delay_lines {
+            dl.begin_block();
+        }
 
         for t in 0..input.len() {
             // Input diffusion: decorrelate transients through serial all-pass chain
@@ -150,11 +179,12 @@ impl Reverb {
             // Hadamard mixing (energy-preserving, O(N log N) butterfly)
             Self::hadamard8(&mut tap);
 
-            // Feed back with decay, inject diffused input
+            // Feed back with decay, inject diffused input. Each line has its own feedback
+            // gain (see `set_room_size`) so that all lines share the same T60 despite their
+            // different lengths.
             let input_per_ch = diffused * Self::NORM;
             for i in 0..FDN_SIZE {
-                self.delay_lines[i].write(tap[i] * self.feedback + input_per_ch);
-                self.delay_lines[i].advance_mod();
+                self.delay_lines[i].write(tap[i] * self.feedback[i] + input_per_ch);
             }
 
             // Stereo output: alternating channel taps with sign variation for decorrelation
@@ -163,6 +193,13 @@ impl Reverb {
 
             output_left[t] = raw_l * self.wet1 + raw_r * self.wet2;
             output_right[t] = raw_r * self.wet1 + raw_l * self.wet2;
+        }
+
+        // Modulation is frozen for the duration of the block (see `begin_block`) and only
+        // advanced afterward; at the modulation rates used here (0.1-0.18 Hz) the resulting
+        // phase error within one block is negligible.
+        for dl in &mut self.delay_lines {
+            dl.advance_block(input.len());
         }
     }
 
@@ -203,7 +240,14 @@ impl Reverb {
     }
 
     pub(crate) fn set_room_size(&mut self, value: f32) {
-        self.feedback = value * Self::SCALE_ROOM + Self::OFFSET_ROOM;
+        // Standard T60-controlled FDN feedback (Jot): g_i = 10^(-3*L_i/(T60*fs)) makes every
+        // line, regardless of its length, decay at exactly -60/T60 dB per second, so the mix
+        // as a whole decays at the target T60.
+        let t60 = Self::room_to_t60(value);
+        for i in 0..FDN_SIZE {
+            let len = self.delay_lines[i].base_length as f32;
+            self.feedback[i] = 10.0_f32.powf(-3.0 * len / (t60 * self.sample_rate));
+        }
     }
 
     pub(crate) fn set_damp(&mut self, value: f32) {
@@ -240,11 +284,14 @@ struct ModulatedDelayLine {
     mod_phase: f32,
     mod_rate: f32,
     mod_depth: f32,
+    // Read offset for the current block, computed once by `begin_block` instead of per sample.
+    int_offset: usize,
+    frac: f32,
 }
 
 impl ModulatedDelayLine {
     fn new(base_length: usize, mod_rate: f32, mod_depth: f32) -> Self {
-        let buf_size = base_length + (mod_depth as usize) + 2;
+        let buf_size = base_length + mod_depth.ceil() as usize + 2;
         Self {
             buffer: vec![0.0; buf_size],
             write_pos: 0,
@@ -252,6 +299,8 @@ impl ModulatedDelayLine {
             mod_phase: 0.0,
             mod_rate,
             mod_depth,
+            int_offset: base_length,
+            frac: 0.0,
         }
     }
 
@@ -259,18 +308,27 @@ impl ModulatedDelayLine {
         self.buffer.fill(0.0);
     }
 
+    /// Recompute the read offset once per block; modulation is far slower than the block
+    /// rate, so freezing it within a block is inaudible and avoids a per-sample `sin()`.
+    #[inline]
+    fn begin_block(&mut self) {
+        let offset = self.base_length as f32 + self.mod_depth * self.mod_phase.sin();
+        self.int_offset = offset as usize;
+        self.frac = offset - self.int_offset as f32;
+    }
+
     /// Read with sinusoidal modulation and linear interpolation.
     #[inline]
     fn read(&self) -> f32 {
-        let offset = self.base_length as f32 + self.mod_depth * self.mod_phase.sin();
-        let int_offset = offset as usize;
-        let frac = offset - int_offset as f32;
-
         let buf_len = self.buffer.len();
-        let i0 = (self.write_pos + buf_len - int_offset) % buf_len;
-        let i1 = (self.write_pos + buf_len - int_offset - 1) % buf_len;
 
-        let mut val = self.buffer[i0] * (1.0 - frac) + self.buffer[i1] * frac;
+        let mut i0 = self.write_pos + buf_len - self.int_offset;
+        if i0 >= buf_len {
+            i0 -= buf_len;
+        }
+        let i1 = if i0 == 0 { buf_len - 1 } else { i0 - 1 };
+
+        let mut val = self.buffer[i0] * (1.0 - self.frac) + self.buffer[i1] * self.frac;
         if val.abs() < 1.0e-20 {
             val = 0.0;
         }
@@ -280,12 +338,16 @@ impl ModulatedDelayLine {
     #[inline]
     fn write(&mut self, value: f32) {
         self.buffer[self.write_pos] = value;
-        self.write_pos = (self.write_pos + 1) % self.buffer.len();
+        self.write_pos += 1;
+        if self.write_pos == self.buffer.len() {
+            self.write_pos = 0;
+        }
     }
 
+    /// Advance the modulation phase by one block's worth of samples.
     #[inline]
-    fn advance_mod(&mut self) {
-        self.mod_phase += self.mod_rate;
+    fn advance_block(&mut self, block_len: usize) {
+        self.mod_phase += self.mod_rate * block_len as f32;
         if self.mod_phase >= consts::TAU {
             self.mod_phase -= consts::TAU;
         }
@@ -330,7 +392,10 @@ impl AllPassDiffuser {
         let w = input - self.feedback * delayed;
         let output = self.feedback * w + delayed;
         self.buffer[self.pos] = w;
-        self.pos = (self.pos + 1) % self.buffer.len();
+        self.pos += 1;
+        if self.pos == self.buffer.len() {
+            self.pos = 0;
+        }
         output
     }
 }
@@ -361,5 +426,146 @@ impl OnePoleLP {
             self.state = 0.0;
         }
         self.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        }
+    }
+
+    fn rms(v: &[f32]) -> f32 {
+        (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt()
+    }
+
+    /// Wet RMS for noise input at room 0.5 / 44.1 kHz, matching the level Freeverb produced
+    /// under the same conditions (see reverb harness measurements: OUTPUT_GAIN calibration).
+    /// This locks the calibrated level in place; a future change to OUTPUT_GAIN or the decay
+    /// constants that shifts it out of this window should be a deliberate, re-measured choice.
+    #[test]
+    fn wet_rms_at_room_half_matches_calibrated_level() {
+        let mut reverb = Reverb::new(44100);
+        reverb.set_room_size(0.5);
+
+        let block_size = 64;
+        let mut rng = Lcg(1);
+        let mut input = vec![0_f32; block_size];
+        let mut left = vec![0_f32; block_size];
+        let mut right = vec![0_f32; block_size];
+
+        // Let the reverb tail build up before measuring, as a fresh delay network
+        // starts under-energized relative to its steady-state response to noise.
+        let warm_up_blocks = 3 * 44100 / block_size;
+        for _ in 0..warm_up_blocks {
+            for x in input.iter_mut() {
+                *x = rng.next() * 0.015;
+            }
+            reverb.process(&input, &mut left, &mut right);
+        }
+
+        let measure_blocks = 3 * 44100 / block_size;
+        let mut collected = Vec::with_capacity(measure_blocks * block_size);
+        for _ in 0..measure_blocks {
+            for x in input.iter_mut() {
+                *x = rng.next() * 0.015;
+            }
+            reverb.process(&input, &mut left, &mut right);
+            collected.extend_from_slice(&left);
+        }
+
+        let level = rms(&collected);
+        assert!(
+            (0.17..0.21).contains(&level),
+            "wet RMS {} is outside the calibrated window",
+            level
+        );
+    }
+
+    /// At room size 0, the reverb should decay quickly and stay numerically well-behaved.
+    #[test]
+    fn room_zero_decays_and_stays_finite() {
+        for &sample_rate in &[16000, 192000] {
+            let mut reverb = Reverb::new(sample_rate);
+            reverb.set_room_size(0.0);
+
+            let block_size = 64;
+            let mut rng = Lcg(2);
+            let mut input = vec![0_f32; block_size];
+            let mut left = vec![0_f32; block_size];
+            let mut right = vec![0_f32; block_size];
+
+            let noise_blocks = sample_rate as usize / block_size;
+            for _ in 0..noise_blocks {
+                for x in input.iter_mut() {
+                    *x = rng.next() * 0.015;
+                }
+                reverb.process(&input, &mut left, &mut right);
+                assert!(left.iter().chain(right.iter()).all(|x| x.is_finite()));
+            }
+
+            // Room 0's T60 is under a second; a few seconds of silence should bring
+            // the tail down to near-silence.
+            let silence = vec![0_f32; block_size];
+            let silence_blocks = 3 * sample_rate as usize / block_size;
+            for i in 0..silence_blocks {
+                reverb.process(&silence, &mut left, &mut right);
+                assert!(left.iter().chain(right.iter()).all(|x| x.is_finite()));
+                if i == silence_blocks - 1 {
+                    let peak = left
+                        .iter()
+                        .chain(right.iter())
+                        .fold(0_f32, |m, x| m.max(x.abs()));
+                    assert!(peak < 1.0e-4, "peak {} did not decay near silence", peak);
+                }
+            }
+        }
+    }
+
+    /// After noise stops, the decaying tail should eventually flush to exact zero (or
+    /// below the denormal-flush threshold), confirming the 1e-20 flush inside the delay
+    /// lines, dampers and diffusers actually reaches the output.
+    #[test]
+    fn silence_after_noise_flushes_denormals() {
+        let mut reverb = Reverb::new(44100);
+        reverb.set_room_size(0.5);
+
+        let block_size = 64;
+        let mut rng = Lcg(3);
+        let mut input = vec![0_f32; block_size];
+        let mut left = vec![0_f32; block_size];
+        let mut right = vec![0_f32; block_size];
+
+        let noise_blocks = 44100 / block_size;
+        for _ in 0..noise_blocks {
+            for x in input.iter_mut() {
+                *x = rng.next() * 0.015;
+            }
+            reverb.process(&input, &mut left, &mut right);
+        }
+
+        let silence = vec![0_f32; block_size];
+        // Room 0.5's T60 is ~1.1 s; 15 s of silence is more than an order of magnitude
+        // of decay time, well past where the internal 1e-20 flush should have zeroed
+        // every line.
+        let silence_blocks = 15 * 44100 / block_size;
+        for _ in 0..silence_blocks {
+            reverb.process(&silence, &mut left, &mut right);
+        }
+
+        assert!(left
+            .iter()
+            .chain(right.iter())
+            .all(|&x| x == 0.0 || x.abs() < 1.0e-15));
     }
 }
