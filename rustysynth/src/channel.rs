@@ -114,7 +114,7 @@ impl Channel {
     }
 
     pub(crate) fn reset(&mut self) {
-        self.bank_number = if self.is_percussion_channel { 128 } else { 0 };
+        self.bank_number = 0;
         self.patch_number = 0;
 
         self.modulation = 0;
@@ -176,10 +176,6 @@ impl Channel {
 
     pub(crate) fn set_bank(&mut self, value: i32) {
         self.bank_number = value;
-
-        if self.is_percussion_channel {
-            self.bank_number += 128;
-        }
     }
 
     pub(crate) fn set_patch(&mut self, value: i32) {
@@ -355,7 +351,13 @@ impl Channel {
 
     // Public getters (normalized values)
     pub fn get_bank_number(&self) -> i32 {
-        self.bank_number
+        // The drum offset is applied on read so that switching the percussion flag
+        // takes effect without waiting for the next bank select.
+        if self.is_percussion_channel {
+            self.bank_number + 128
+        } else {
+            self.bank_number
+        }
     }
 
     pub fn get_patch_number(&self) -> i32 {
@@ -654,5 +656,31 @@ impl Channel {
     pub(crate) fn get_scale_tuning_for_key(&self, key: i32) -> f32 {
         let pitch_class = (key % 12) as usize;
         self.scale_tuning[pitch_class] * 0.01 // cents to semitones
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percussion_flag_switch_applies_to_current_bank() {
+        let mut channel = Channel::new(false);
+        channel.set_bank(3);
+        assert_eq!(channel.get_bank_number(), 3);
+
+        channel.set_percussion_channel(true);
+        assert_eq!(channel.get_bank_number(), 131);
+
+        channel.set_percussion_channel(false);
+        assert_eq!(channel.get_bank_number(), 3);
+    }
+
+    #[test]
+    fn reset_keeps_percussion_drum_bank() {
+        let mut channel = Channel::new(true);
+        channel.set_bank(5);
+        channel.reset();
+        assert_eq!(channel.get_bank_number(), 128);
     }
 }
