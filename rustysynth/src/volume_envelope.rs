@@ -3,11 +3,13 @@
 use crate::envelope_stage::EnvelopeStage;
 use crate::soundfont_math::SoundFontMath;
 use crate::synthesizer_settings::SynthesizerSettings;
+use crate::volume_attack_curve::VolumeAttackCurve;
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub(crate) struct VolumeEnvelope {
     sample_rate: i32,
+    attack_curve: VolumeAttackCurve,
 
     attack_slope: f64,
     decay_slope: f64,
@@ -32,6 +34,7 @@ impl VolumeEnvelope {
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
             sample_rate: settings.sample_rate,
+            attack_curve: settings.volume_attack_curve,
             attack_slope: 0_f64,
             decay_slope: 0_f64,
             release_slope: 0_f64,
@@ -108,10 +111,14 @@ impl VolumeEnvelope {
                 true
             }
             EnvelopeStage::Attack => {
-                // SF2 spec §8.1.3: convex attack curve (cubic)
                 let t = (self.attack_slope * (current_time - self.attack_start_time)).min(1.0);
-                let inv = 1.0 - t;
-                self.value = (1.0 - inv * inv * inv) as f32;
+                self.value = match self.attack_curve {
+                    VolumeAttackCurve::Linear => t as f32,
+                    VolumeAttackCurve::Cubic => {
+                        let inv = 1.0 - t;
+                        (1.0 - inv * inv * inv) as f32
+                    }
+                };
                 self.priority = 3_f32 + self.value;
                 true
             }
@@ -147,5 +154,25 @@ impl VolumeEnvelope {
 
     pub(crate) fn get_priority(&self) -> f32 {
         self.priority
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_at_half_attack(curve: VolumeAttackCurve) -> f32 {
+        let mut settings = SynthesizerSettings::new(44100);
+        settings.volume_attack_curve = curve;
+        let mut envelope = VolumeEnvelope::new(&settings);
+        envelope.start(0.0, 1.0, 0.0, 1.0, 1.0, 1.0);
+        envelope.process(22050);
+        envelope.get_value()
+    }
+
+    #[test]
+    fn attack_curve_follows_setting() {
+        assert!((value_at_half_attack(VolumeAttackCurve::Linear) - 0.5).abs() < 1e-6);
+        assert!((value_at_half_attack(VolumeAttackCurve::Cubic) - 0.875).abs() < 1e-6);
     }
 }

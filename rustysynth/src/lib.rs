@@ -38,6 +38,7 @@ mod synthesizer;
 mod synthesizer_settings;
 mod voice;
 mod voice_collection;
+mod volume_attack_curve;
 mod volume_envelope;
 
 mod midifile;
@@ -65,3 +66,4 @@ pub use self::soundfont_version::SoundFontVersion;
 pub use self::channel::Channel;
 pub use self::synthesizer::Synthesizer;
 pub use self::synthesizer_settings::SynthesizerSettings;
+pub use self::volume_attack_curve::VolumeAttackCurve;

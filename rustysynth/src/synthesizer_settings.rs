@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::error::SynthesizerError;
+use crate::volume_attack_curve::VolumeAttackCurve;
 
 /// Specifies a set of parameters for synthesis.
 #[derive(Debug)]
@@ -14,12 +15,15 @@ pub struct SynthesizerSettings {
     pub maximum_polyphony: usize,
     /// The value indicating whether reverb and chorus are enabled.
     pub enable_reverb_and_chorus: bool,
+    /// The shape of the volume envelope attack stage.
+    pub volume_attack_curve: VolumeAttackCurve,
 }
 
 impl SynthesizerSettings {
     const DEFAULT_BLOCK_SIZE: usize = 64;
     const DEFAULT_MAXIMUM_POLYPHONY: usize = 64;
     const DEFAULT_ENABLE_REVERB_AND_CHORUS: bool = true;
+    const DEFAULT_VOLUME_ATTACK_CURVE: VolumeAttackCurve = VolumeAttackCurve::Cubic;
 
     /// Initializes a new instance of synthesizer settings.
     ///
@@ -32,6 +36,7 @@ impl SynthesizerSettings {
             block_size: SynthesizerSettings::DEFAULT_BLOCK_SIZE,
             maximum_polyphony: SynthesizerSettings::DEFAULT_MAXIMUM_POLYPHONY,
             enable_reverb_and_chorus: SynthesizerSettings::DEFAULT_ENABLE_REVERB_AND_CHORUS,
+            volume_attack_curve: SynthesizerSettings::DEFAULT_VOLUME_ATTACK_CURVE,
         }
     }
 
