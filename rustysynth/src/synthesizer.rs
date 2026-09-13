@@ -855,3 +855,37 @@ impl Effects {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::layered_soundfont;
+
+    fn render_block(synthesizer: &mut Synthesizer) {
+        let mut left = vec![0_f32; synthesizer.get_block_size()];
+        let mut right = vec![0_f32; synthesizer.get_block_size()];
+        synthesizer.render(&mut left, &mut right);
+    }
+
+    #[test]
+    fn stealing_does_not_take_layer_started_by_same_note_on() {
+        let mut settings = SynthesizerSettings::new(44100);
+        settings.maximum_polyphony = 8;
+        let mut synthesizer = Synthesizer::new(&layered_soundfont(), &settings).unwrap();
+
+        for key in 40..44 {
+            synthesizer.note_on(1, key, 100);
+        }
+        render_block(&mut synthesizer);
+        assert_eq!(synthesizer.voices.active_voices().len(), 8);
+
+        synthesizer.note_on(0, 60, 100);
+        let new_voices = synthesizer
+            .voices
+            .active_voices()
+            .iter()
+            .filter(|voice| voice.channel() == 0 && voice.key() == 60)
+            .count();
+        assert_eq!(new_voices, 2);
+    }
+}

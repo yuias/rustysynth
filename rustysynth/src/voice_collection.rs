@@ -25,6 +25,11 @@ impl VoiceCollection {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_voices(&self) -> &[Voice] {
+        &self.voices[..self.active_voice_count]
+    }
+
     pub(crate) fn request_new(
         &mut self,
         region: &InstrumentRegion,
@@ -54,10 +59,23 @@ impl VoiceCollection {
         // Find one which has the lowest effective priority.
         // Context-aware: prefer stealing same-key/same-channel voices to minimize
         // audible disruption across unrelated parts.
-        let mut candidate: usize = 0;
+        // Voices that have not rendered yet were started by this or a simultaneous note-on
+        // (e.g. the other half of a stereo pair), so they are only taken as a last resort.
+        let candidate = self
+            .find_steal_candidate(channel, key, true)
+            .or_else(|| self.find_steal_candidate(channel, key, false))
+            .unwrap_or(0);
+        Some(&mut self.voices[candidate])
+    }
+
+    fn find_steal_candidate(&self, channel: i32, key: i32, skip_unrendered: bool) -> Option<usize> {
+        let mut candidate: Option<usize> = None;
         let mut lowest_priority = f32::MAX;
         for i in 0..self.active_voice_count {
             let voice = &self.voices[i];
+            if skip_unrendered && voice.voice_length() == 0 {
+                continue;
+            }
             let mut priority = voice.priority();
 
             // Prefer stealing from the same channel (same musical part)
@@ -70,18 +88,22 @@ impl VoiceCollection {
                 priority -= 10.0;
             }
 
-            if priority < lowest_priority {
-                lowest_priority = priority;
-                candidate = i;
-            } else if priority == lowest_priority {
-                // Same priority...
-                // The older one should be more suitable for reuse.
-                if voice.voice_length() > self.voices[candidate].voice_length() {
-                    candidate = i;
+            match candidate {
+                Some(c) if priority == lowest_priority => {
+                    // Same priority...
+                    // The older one should be more suitable for reuse.
+                    if voice.voice_length() > self.voices[c].voice_length() {
+                        candidate = Some(i);
+                    }
                 }
+                _ if priority < lowest_priority => {
+                    lowest_priority = priority;
+                    candidate = Some(i);
+                }
+                _ => {}
             }
         }
-        Some(&mut self.voices[candidate])
+        candidate
     }
 
     pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel], master_tune: f32) {
