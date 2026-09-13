@@ -920,6 +920,57 @@ mod tests {
         synthesizer.render(&mut left, &mut right);
     }
 
+    /// Renders a fixed performance touching every controller that feeds a default modulator.
+    fn render_controller_performance(settings: &SynthesizerSettings) -> (f64, f64) {
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), settings).unwrap();
+        let mut left = vec![0_f32; settings.block_size];
+        let mut right = vec![0_f32; settings.block_size];
+        let mut abs_sum = 0_f64;
+        let mut square_sum = 0_f64;
+
+        let events: [(i32, i32, i32); 12] = [
+            (0xB0, 7, 90),
+            (0xB0, 10, 20),
+            (0xB0, 11, 100),
+            (0xB0, 91, 80),
+            (0xB0, 93, 60),
+            (0xB0, 1, 127),
+            (0xD0, 90, 0),
+            (0xE0, 0, 96),
+            (0xB0, 2, 50),
+            (0xA0, 60, 100),
+            (0xB0, 74, 30),
+            (0xE0, 0, 64),
+        ];
+
+        synthesizer.note_on(0, 60, 40);
+        synthesizer.note_on(0, 67, 110);
+        for (i, &(command, data1, data2)) in events.iter().enumerate() {
+            synthesizer.process_midi_message(0, command, data1, data2);
+            for _ in 0..(8 + i) {
+                synthesizer.render(&mut left, &mut right);
+                for (&l, &r) in left.iter().zip(right.iter()) {
+                    abs_sum += l.abs() as f64 + r.abs() as f64;
+                    square_sum += (l * l) as f64 + (r * r) as f64;
+                }
+            }
+        }
+        (abs_sum, square_sum)
+    }
+
+    // Guards the default-modulator paths: a SoundFont without modulators must keep rendering
+    // exactly as it did before SoundFont modulator support was added.
+    #[test]
+    fn soundfont_without_modulators_keeps_reference_render() {
+        let settings = SynthesizerSettings::new(44100);
+        let (abs_sum, square_sum) = render_controller_performance(&settings);
+        assert!((abs_sum - REFERENCE_ABS_SUM).abs() <= REFERENCE_ABS_SUM * 1e-9);
+        assert!((square_sum - REFERENCE_SQUARE_SUM).abs() <= REFERENCE_SQUARE_SUM * 1e-9);
+    }
+
+    const REFERENCE_ABS_SUM: f64 = 392.9663166537539;
+    const REFERENCE_SQUARE_SUM: f64 = 12.505487196549511;
+
     #[test]
     fn stealing_does_not_take_layer_started_by_same_note_on() {
         let mut settings = SynthesizerSettings::new(44100);
