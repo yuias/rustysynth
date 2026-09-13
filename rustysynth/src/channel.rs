@@ -66,6 +66,12 @@ pub struct Channel {
     portamento_time: u8,         // CC#5 (raw 0-127)
     portamento_control: i32,     // CC#84 (source key, -1 = use last note)
     last_note_on_key: i32,       // Tracks the last note-on key for portamento source
+
+    // Raw values of every controller, poly pressure and the pitch wheel, read by SoundFont
+    // modulators whose sources are not covered by the typed fields above.
+    controller_values: [u8; 128],
+    poly_pressure: [u8; 128],
+    pitch_bend_raw: u16,
 }
 
 impl Channel {
@@ -106,6 +112,9 @@ impl Channel {
             portamento_time: 0,
             portamento_control: -1,
             last_note_on_key: -1,
+            controller_values: [0; 128],
+            poly_pressure: [0; 128],
+            pitch_bend_raw: 8192,
         };
 
         channel.reset();
@@ -152,6 +161,15 @@ impl Channel {
         self.portamento_time = 0;
         self.portamento_control = -1;
         self.last_note_on_key = -1;
+
+        self.controller_values = [0; 128];
+        self.controller_values[7] = 100;
+        self.controller_values[10] = 64;
+        self.controller_values[11] = 127;
+        self.controller_values[91] = 40;
+        self.controller_values[71..=75].fill(64);
+        self.poly_pressure = [0; 128];
+        self.pitch_bend_raw = 8192;
     }
 
     pub(crate) fn set_percussion_channel(&mut self, is_percussion: bool) {
@@ -175,6 +193,12 @@ impl Channel {
         self.channel_pressure = 0;
         self.portamento_on = false;
         self.portamento_control = -1;
+
+        self.controller_values[1] = 0;
+        self.controller_values[11] = 127;
+        self.controller_values[64..=67].fill(0);
+        self.poly_pressure = [0; 128];
+        self.pitch_bend_raw = 8192;
     }
 
     pub(crate) fn set_bank(&mut self, value: i32) {
@@ -312,6 +336,35 @@ impl Channel {
 
     pub(crate) fn set_pitch_bend(&mut self, value1: i32, value2: i32) {
         self.pitch_bend = (1_f32 / 8192_f32) * ((value1 | (value2 << 7)) - 8192) as f32;
+        self.pitch_bend_raw = ((value1 & 0x7F) | ((value2 & 0x7F) << 7)) as u16;
+    }
+
+    pub(crate) fn set_controller_value(&mut self, controller: i32, value: i32) {
+        if (0..128).contains(&controller) {
+            self.controller_values[controller as usize] = (value & 0x7F) as u8;
+        }
+    }
+
+    pub(crate) fn get_controller_value(&self, controller: u8) -> u8 {
+        self.controller_values[(controller & 0x7F) as usize]
+    }
+
+    pub(crate) fn set_poly_pressure(&mut self, key: i32, value: i32) {
+        if (0..128).contains(&key) {
+            self.poly_pressure[key as usize] = (value & 0x7F) as u8;
+        }
+    }
+
+    pub(crate) fn get_poly_pressure(&self, key: i32) -> u8 {
+        if (0..128).contains(&key) {
+            self.poly_pressure[key as usize]
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn get_pitch_bend_raw(&self) -> u16 {
+        self.pitch_bend_raw
     }
 
     // Phase 2: Additional CC setters
@@ -690,6 +743,36 @@ mod tests {
         channel.reset_all_controllers();
         channel.data_entry_coarse(20);
         assert_eq!(channel.get_vibrato_rate_raw(), 80);
+    }
+
+    #[test]
+    fn raw_controller_state_follows_resets() {
+        let mut channel = Channel::new(false);
+        assert_eq!(channel.get_controller_value(7), 100);
+        assert_eq!(channel.get_controller_value(11), 127);
+        assert_eq!(channel.get_pitch_bend_raw(), 8192);
+
+        channel.set_controller_value(7, 20);
+        channel.set_controller_value(2, 90);
+        channel.set_controller_value(11, 30);
+        channel.set_controller_value(128, 1);
+        channel.set_poly_pressure(60, 77);
+        channel.set_poly_pressure(-1, 77);
+        channel.set_pitch_bend(0, 0);
+        assert_eq!(channel.get_poly_pressure(60), 77);
+        assert_eq!(channel.get_pitch_bend_raw(), 0);
+
+        // Reset All Controllers leaves volume and other controllers untouched.
+        channel.reset_all_controllers();
+        assert_eq!(channel.get_controller_value(7), 20);
+        assert_eq!(channel.get_controller_value(2), 90);
+        assert_eq!(channel.get_controller_value(11), 127);
+        assert_eq!(channel.get_poly_pressure(60), 0);
+        assert_eq!(channel.get_pitch_bend_raw(), 8192);
+
+        channel.reset();
+        assert_eq!(channel.get_controller_value(7), 100);
+        assert_eq!(channel.get_controller_value(2), 0);
     }
 
     #[test]

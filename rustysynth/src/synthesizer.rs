@@ -155,43 +155,46 @@ impl Synthesizer {
         match command {
             0x80 => self.note_off(channel, data1),       // Note Off
             0x90 => self.note_on(channel, data1, data2), // Note On
-            0xB0 => match data1 // Controller
-            {
-                0x00 => channel_info.set_bank(data2), // Bank Selection
-                0x01 => channel_info.set_modulation_coarse(data2), // Modulation Coarse
-                0x21 => channel_info.set_modulation_fine(data2), // Modulation Fine
-                0x06 => channel_info.data_entry_coarse(data2), // Data Entry Coarse
-                0x26 => channel_info.data_entry_fine(data2), // Data Entry Fine
-                0x07 => channel_info.set_volume_coarse(data2), // Channel Volume Coarse
-                0x27 => channel_info.set_volume_fine(data2), // Channel Volume Fine
-                0x0A => channel_info.set_pan_coarse(data2), // Pan Coarse
-                0x2A => channel_info.set_pan_fine(data2), // Pan Fine
-                0x0B => channel_info.set_expression_coarse(data2), // Expression Coarse
-                0x2B => channel_info.set_expression_fine(data2), // Expression Fine
-                0x20 => channel_info.set_bank_lsb(data2), // Bank Select LSB
-                0x05 => channel_info.set_portamento_time(data2), // Portamento Time
-                0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
-                0x41 => channel_info.set_portamento_on(data2), // Portamento On/Off
-                0x42 => self.set_sostenuto_pedal(channel, data2), // Sostenuto
-                0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
-                0x47 => channel_info.set_filter_resonance(data2), // Filter Resonance (CC#71)
-                0x48 => channel_info.set_release_time(data2), // Release Time (CC#72)
-                0x49 => channel_info.set_attack_time(data2), // Attack Time (CC#73)
-                0x4A => channel_info.set_brightness(data2), // Brightness (CC#74)
-                0x4B => channel_info.set_decay_time(data2), // Decay Time (CC#75)
-                0x54 => channel_info.set_portamento_control(data2), // Portamento Control
-                0x5B => channel_info.set_reverb_send(data2), // Reverb Send
-                0x5D => channel_info.set_chorus_send(data2), // Chorus Send
-                0x5E => channel_info.set_variation_send(data2), // Variation/Effect Depth
-                0x63 => channel_info.set_nrpn_coarse(data2), // NRPN Coarse
-                0x62 => channel_info.set_nrpn_fine(data2), // NRPN Fine
-                0x65 => channel_info.set_rpn_coarse(data2), // RPN Coarse
-                0x64 => channel_info.set_rpn_fine(data2), // RPN Fine
-                0x78 => self.note_off_all_channel(channel, true), // All Sound Off
-                0x79 => self.reset_all_controllers_channel(channel), // Reset All Controllers
-                0x7B => self.note_off_all_channel(channel, false), // All Note Off
-                _ => (),
-            },
+            0xA0 => channel_info.set_poly_pressure(data1, data2), // Polyphonic Key Pressure
+            0xB0 => {
+                channel_info.set_controller_value(data1, data2);
+                match data1 {
+                    0x00 => channel_info.set_bank(data2), // Bank Selection
+                    0x01 => channel_info.set_modulation_coarse(data2), // Modulation Coarse
+                    0x21 => channel_info.set_modulation_fine(data2), // Modulation Fine
+                    0x06 => channel_info.data_entry_coarse(data2), // Data Entry Coarse
+                    0x26 => channel_info.data_entry_fine(data2), // Data Entry Fine
+                    0x07 => channel_info.set_volume_coarse(data2), // Channel Volume Coarse
+                    0x27 => channel_info.set_volume_fine(data2), // Channel Volume Fine
+                    0x0A => channel_info.set_pan_coarse(data2), // Pan Coarse
+                    0x2A => channel_info.set_pan_fine(data2), // Pan Fine
+                    0x0B => channel_info.set_expression_coarse(data2), // Expression Coarse
+                    0x2B => channel_info.set_expression_fine(data2), // Expression Fine
+                    0x20 => channel_info.set_bank_lsb(data2), // Bank Select LSB
+                    0x05 => channel_info.set_portamento_time(data2), // Portamento Time
+                    0x40 => channel_info.set_hold_pedal(data2), // Hold Pedal
+                    0x41 => channel_info.set_portamento_on(data2), // Portamento On/Off
+                    0x42 => self.set_sostenuto_pedal(channel, data2), // Sostenuto
+                    0x43 => channel_info.set_soft_pedal(data2), // Soft Pedal
+                    0x47 => channel_info.set_filter_resonance(data2), // Filter Resonance (CC#71)
+                    0x48 => channel_info.set_release_time(data2), // Release Time (CC#72)
+                    0x49 => channel_info.set_attack_time(data2), // Attack Time (CC#73)
+                    0x4A => channel_info.set_brightness(data2), // Brightness (CC#74)
+                    0x4B => channel_info.set_decay_time(data2), // Decay Time (CC#75)
+                    0x54 => channel_info.set_portamento_control(data2), // Portamento Control
+                    0x5B => channel_info.set_reverb_send(data2), // Reverb Send
+                    0x5D => channel_info.set_chorus_send(data2), // Chorus Send
+                    0x5E => channel_info.set_variation_send(data2), // Variation/Effect Depth
+                    0x63 => channel_info.set_nrpn_coarse(data2), // NRPN Coarse
+                    0x62 => channel_info.set_nrpn_fine(data2), // NRPN Fine
+                    0x65 => channel_info.set_rpn_coarse(data2), // RPN Coarse
+                    0x64 => channel_info.set_rpn_fine(data2), // RPN Fine
+                    0x78 => self.note_off_all_channel(channel, true), // All Sound Off
+                    0x79 => self.reset_all_controllers_channel(channel), // Reset All Controllers
+                    0x7B => self.note_off_all_channel(channel, false), // All Note Off
+                    _ => (),
+                }
+            }
             0xC0 => channel_info.set_patch(data1), // Program Change
             0xD0 => channel_info.set_channel_pressure(data1), // Channel Pressure
             0xE0 => channel_info.set_pitch_bend(data1, data2), // Pitch Bend
