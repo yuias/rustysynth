@@ -128,8 +128,10 @@ impl Chorus {
             // Write input + feedback to delay buffer
             self.buffer_l[self.buffer_index] = input_left[t] + self.feedback * self.prev_out_l;
             self.buffer_r[self.buffer_index] = input_right[t] + self.feedback * self.prev_out_r;
-            self.prev_out_l = output_left[t];
-            self.prev_out_r = output_right[t];
+            // With feedback above 0.5, rounding keeps the smallest denormal circulating
+            // forever after the input goes silent, so flush tiny values.
+            self.prev_out_l = if output_left[t].abs() < 1.0e-20 { 0.0 } else { output_left[t] };
+            self.prev_out_r = if output_right[t].abs() < 1.0e-20 { 0.0 } else { output_right[t] };
 
             self.buffer_index += 1;
             if self.buffer_index == buffer_length {
@@ -203,5 +205,35 @@ impl Chorus {
         self.buffer_r.fill(0_f32);
         self.prev_out_l = 0.0;
         self.prev_out_r = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feedback_tail_decays_to_exact_silence() {
+        let mut chorus = Chorus::new(44100, 0.002, 0.0019, 0.4);
+        chorus.set_feedback(0.7);
+
+        let mut seed = 1_u32;
+        let mut noise = vec![0_f32; 64];
+        let silence = vec![0_f32; 64];
+        let mut left = vec![0_f32; 64];
+        let mut right = vec![0_f32; 64];
+
+        for _ in 0..(44100 / 64) {
+            for x in noise.iter_mut() {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *x = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+            }
+            chorus.process(&noise, &noise, &mut left, &mut right);
+        }
+        for _ in 0..(10 * 44100 / 64) {
+            chorus.process(&silence, &silence, &mut left, &mut right);
+        }
+
+        assert!(left.iter().chain(right.iter()).all(|&x| x == 0.0));
     }
 }
