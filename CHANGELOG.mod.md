@@ -15,6 +15,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
   - Filter Resonance (CC#71) and Brightness (CC#74), applied to sounding voices.
   - Release Time (CC#72), Attack Time (CC#73) and Decay Time (CC#75), applied at note-on.
   - Channel Pressure, applied as vibrato depth (SF2 default modulator).
+  - Polyphonic Key Pressure, available as a SoundFont modulator source.
 - NRPN handling for GS/XG tone parameters (MSB 1): vibrato rate, depth and delay, TVF cutoff and resonance, and TVA attack, decay and release.
 - SysEx processing via `Synthesizer::process_sysex`:
   - GM System On, GS Reset and XG System On.
@@ -29,8 +30,9 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 - Channel mute: `set_channel_mute`, `is_channel_muted`, `set_channel_mute_mask`, `get_channel_mute_mask`.
 - Effect parameters: `set_reverb_room_size`, `set_reverb_damp`, `set_reverb_wet`, `set_reverb_width`, `set_chorus_params`, `set_chorus_type` (six GM chorus presets) and `set_chorus_feedback`.
 - SF2 default modulator from note-on velocity to filter cutoff.
-- `SynthesizerSettings::volume_attack_curve` (`VolumeAttackCurve::Linear` or `Cubic`) and `SynthesizerSettings::enable_velocity_to_filter_cutoff`.
-- `SoundFont::get_warnings` lists instrument regions that were skipped while loading.
+- SoundFont modulators (PMOD/IMOD). Instrument modulators override the SF2 default modulators and preset modulators add to them. Sources: note-on velocity and key, poly and channel pressure, pitch wheel and its sensitivity, and MIDI controllers. Modulators on pitch, filter, attenuation, pan and effect sends follow controller changes on sounding notes; modulators on envelope and LFO timing are applied at note-on. Linked modulators are not supported and are skipped.
+- `SynthesizerSettings::volume_attack_curve` (`VolumeAttackCurve::Linear` or `Cubic`), `SynthesizerSettings::enable_velocity_to_filter_cutoff` and `SynthesizerSettings::enable_soundfont_modulators`.
+- `SoundFont::get_warnings` lists instrument regions and modulators that were skipped while loading.
 
 ## Changed
 
@@ -43,6 +45,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 - Soft notes are filtered by the velocity to filter cutoff default modulator, up to two octaves at the lowest velocity. Set `enable_velocity_to_filter_cutoff` to `false` for the previous behavior.
 - When polyphony is exhausted, voice stealing prefers voices on the same channel, and above all the same key on the same channel.
 - Invalid instrument regions are skipped with a warning instead of rejecting the whole SoundFont. `SoundFontError::SanityCheckFailed` is no longer returned.
+- SoundFonts that define modulators sound as their authors specified. For example, GeneralUser GS disables the velocity to filter cutoff modulator on most instruments, and TimGM6mb disables modulation wheel vibrato on some. Set `enable_soundfont_modulators` to `false` for the previous behavior. Modulator amounts for reverb and chorus sends are relative to the SF2 default amount of 200, which corresponds to the existing send level.
 - GM/GS/XG reset messages restore channel 10 as the only drum channel. `Synthesizer::reset` keeps drum channels set with `set_percussion_channel`, and keeps the master volume and tuning set through the API.
 
 ## Fixed
