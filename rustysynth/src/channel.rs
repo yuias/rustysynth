@@ -163,7 +163,10 @@ impl Channel {
         self.expression = 127 << 7;
         self.hold_pedal = false;
 
+        // RP-015: both parameter numbers become null, so a later data entry is ignored.
         self.rpn = -1;
+        self.nrpn = -1;
+        self.last_data_type = DataType::None;
 
         self.pitch_bend = 0_f32;
 
@@ -674,6 +677,19 @@ mod tests {
 
         channel.set_percussion_channel(false);
         assert_eq!(channel.get_bank_number(), 3);
+    }
+
+    #[test]
+    fn reset_all_controllers_deselects_nrpn() {
+        let mut channel = Channel::new(false);
+        channel.set_nrpn_coarse(1);
+        channel.set_nrpn_fine(8);
+        channel.data_entry_coarse(80);
+        assert_eq!(channel.get_vibrato_rate_raw(), 80);
+
+        channel.reset_all_controllers();
+        channel.data_entry_coarse(20);
+        assert_eq!(channel.get_vibrato_rate_raw(), 80);
     }
 
     #[test]
