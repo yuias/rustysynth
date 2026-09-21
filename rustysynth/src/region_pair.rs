@@ -7,6 +7,25 @@ use crate::preset_region::PresetRegion;
 use crate::soundfont_math::SoundFontMath;
 use crate::voice_modulators::GeneratorOffsets;
 
+/// The value range SF2.04 defines for a generator, or `None` when this file does not
+/// restrict it.
+///
+/// The sum of the preset and instrument values plus any modulator offset can leave the
+/// range the spec defines, where the resulting behavior is undefined; clamping keeps a
+/// malformed or heavily modulated region inside what the synthesis code expects. Only the
+/// ranges that the engine depends on are listed.
+fn generator_range(generator: usize) -> Option<(i32, i32)> {
+    match generator as u16 {
+        GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY => Some((1500, 13500)),
+        GeneratorType::INITIAL_FILTER_Q => Some((0, 960)),
+        GeneratorType::CHORUS_EFFECTS_SEND => Some((0, 1000)),
+        GeneratorType::REVERB_EFFECTS_SEND => Some((0, 1000)),
+        GeneratorType::PAN => Some((-500, 500)),
+        GeneratorType::INITIAL_ATTENUATION => Some((0, 1440)),
+        _ => None,
+    }
+}
+
 #[non_exhaustive]
 pub(crate) struct RegionPair<'a> {
     pub(crate) preset: &'a PresetRegion,
@@ -34,8 +53,12 @@ impl<'a> RegionPair<'a> {
 
     fn gs(&self, i: usize) -> i32 {
         let value = self.preset.gs[i] as i32 + self.instrument.gs[i] as i32;
-        match self.offsets {
+        let value = match self.offsets {
             Some(offsets) => value + offsets[i].round() as i32,
+            None => value,
+        };
+        match generator_range(i) {
+            Some((low, high)) => value.clamp(low, high),
             None => value,
         }
     }
@@ -250,5 +273,18 @@ impl<'a> RegionPair<'a> {
 
     pub(crate) fn get_root_key(&self) -> i32 {
         self.instrument.get_root_key()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generator_ranges_cover_the_restricted_generators() {
+        assert_eq!(generator_range(GeneratorType::INITIAL_ATTENUATION as usize), Some((0, 1440)));
+        assert_eq!(generator_range(GeneratorType::PAN as usize), Some((-500, 500)));
+        // Generators this file does not restrict pass through untouched.
+        assert_eq!(generator_range(GeneratorType::SAMPLE_MODES as usize), None);
     }
 }

@@ -1596,6 +1596,35 @@ mod tests {
     }
 
     #[test]
+    fn a_modulator_cannot_push_a_generator_past_its_spec_range() {
+        // +9600 cents on top of the 13500 default would put the cutoff far above the
+        // 13500 maximum, so the region must sound exactly like an unmodulated one.
+        let modulated = modulated_soundfont(
+            vec![(
+                0x0002,
+                GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY,
+                9600,
+                0,
+                0,
+            )],
+            Vec::new(),
+        );
+        let plain = modulated_soundfont(Vec::new(), Vec::new());
+
+        let render = |sound_font: &Arc<SoundFont>| {
+            let settings = SynthesizerSettings::new(44100);
+            let mut synthesizer = Synthesizer::new(sound_font, &settings).unwrap();
+            synthesizer.note_on(0, 60, 127);
+            let mut left = vec![0_f32; 512];
+            let mut right = vec![0_f32; 512];
+            synthesizer.render(&mut left, &mut right);
+            left
+        };
+
+        assert_eq!(render(&modulated), render(&plain));
+    }
+
+    #[test]
     fn gs_master_volume_and_key_shift_use_sysex_fields() {
         let settings = SynthesizerSettings::new(44100);
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
