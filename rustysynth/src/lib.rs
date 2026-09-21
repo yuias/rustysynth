@@ -38,6 +38,7 @@ mod region_ex;
 mod region_pair;
 mod synthesizer;
 mod synthesizer_settings;
+mod system_mode;
 mod voice;
 mod voice_collection;
 mod voice_modulators;

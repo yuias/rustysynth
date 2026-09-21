@@ -13,6 +13,7 @@ use crate::reverb::Reverb;
 use crate::soundfont::SoundFont;
 use crate::soundfont_math::SoundFontMath;
 use crate::synthesizer_settings::SynthesizerSettings;
+use crate::system_mode::SystemMode;
 use crate::voice_collection::VoiceCollection;
 
 /// An instance of the SoundFont synthesizer.
@@ -50,6 +51,9 @@ pub struct Synthesizer {
     sysex_master_volume: f32,
     sysex_fine_tune: f32,
     sysex_coarse_tune: f32,
+
+    // Set by the last GM/GS/XG reset message; reset() returns it to GM.
+    system_mode: SystemMode,
 }
 
 impl Synthesizer {
@@ -134,6 +138,7 @@ impl Synthesizer {
             sysex_master_volume: 1.0,
             sysex_fine_tune: 0.0,
             sysex_coarse_tune: 0.0,
+            system_mode: SystemMode::Gm,
         })
     }
 
@@ -378,15 +383,26 @@ impl Synthesizer {
         self.sysex_coarse_tune = 0.0;
 
         self.block_read = self.block_size;
+
+        self.set_system_mode(SystemMode::Gm);
     }
 
-    /// Handles GM/GS/XG system reset messages. Unlike `reset()`, this also restores
-    /// the default drum channel assignment, which a system reset defines.
-    fn reset_system(&mut self) {
+    /// Stores the mode and pushes it to every channel, which interprets Bank Select with it.
+    fn set_system_mode(&mut self, mode: SystemMode) {
+        self.system_mode = mode;
+        for channel in &mut self.channels {
+            channel.set_system_mode(mode);
+        }
+    }
+
+    /// Handles GM/GS/XG system reset messages. Unlike `reset()`, this also restores the
+    /// default drum channel assignment and selects the system mode the message defines.
+    fn reset_system(&mut self, mode: SystemMode) {
         for (i, channel) in self.channels.iter_mut().enumerate() {
             channel.set_percussion_channel(i == Synthesizer::PERCUSSION_CHANNEL);
         }
         self.reset();
+        self.set_system_mode(mode);
     }
 
     /// Renders the waveform.
@@ -592,9 +608,9 @@ impl Synthesizer {
     /// - Universal Real-Time: Master Volume (04 01), Master Fine Tune (04 03),
     ///   Master Coarse Tune (04 04)
     /// - GM System On (7E xx 09 01) → reset
-    /// - GS Reset (41 10 42 12 40 00 7F 00 41) → reset
-    /// - GS Use for Rhythm Part (41 10 42 12 40 1x 15 vv) and Scale Tuning (41 10 42 12 40 1x 40 ...)
-    /// - XG System On (43 10 4C 00 00 7E 00) → reset
+    /// - GS Reset (41 1n 42 12 40 00 7F 00 41), device IDs 10h-1Fh → reset
+    /// - GS Use for Rhythm Part (41 1n 42 12 40 1x 15 vv) and Scale Tuning (41 1n 42 12 40 1x 40 ...)
+    /// - XG System On (43 1n 4C 00 00 7E 00), device IDs 10h-1Fh → reset
     ///
     /// The data slice should NOT include the leading F0 or trailing F7.
     pub fn process_sysex(&mut self, data: &[u8]) {
@@ -608,7 +624,7 @@ impl Synthesizer {
                 // 7E xx 09 01 = GM System On
                 if data.len() >= 3 && data[1] <= 0x7F && data[2] == 0x09 {
                     if data.len() >= 4 && (data[3] == 0x01 || data[3] == 0x02 || data[3] == 0x03) {
-                        self.reset_system();
+                        self.reset_system(SystemMode::Gm);
                     }
                 }
             }
@@ -638,7 +654,7 @@ impl Synthesizer {
             0x41 => {
                 // 41 10 42 12 ... = GS DT1 (Data Set 1)
                 if data.len() >= 5
-                    && data[1] == 0x10
+                    && (data[1] & 0xF0) == 0x10
                     && data[2] == 0x42
                     && data[3] == 0x12
                 {
@@ -649,14 +665,14 @@ impl Synthesizer {
             0x43 => {
                 // 43 10 4C 00 00 7E 00 = XG System On
                 if data.len() >= 7
-                    && data[1] == 0x10
+                    && (data[1] & 0xF0) == 0x10
                     && data[2] == 0x4C
                     && data[3] == 0x00
                     && data[4] == 0x00
                     && data[5] == 0x7E
                     && data[6] == 0x00
                 {
-                    self.reset_system();
+                    self.reset_system(SystemMode::Xg);
                 }
             }
             _ => {}
@@ -676,7 +692,7 @@ impl Synthesizer {
         // GS Reset: 40 00 7F 00 [checksum]
         if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x7F {
             if addr_and_data.len() >= 4 && addr_and_data[3] == 0x00 {
-                self.reset_system();
+                self.reset_system(SystemMode::Gs);
             }
             return;
         }
@@ -1200,6 +1216,52 @@ mod tests {
 
         synthesizer.reset();
         assert_eq!(synthesizer.channels[10].get_bank_number(), 128);
+    }
+
+    #[test]
+    fn reset_messages_select_system_mode_and_reset_returns_to_gm() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let assert_mode_pushed = |synthesizer: &Synthesizer, mode: SystemMode| {
+            assert_eq!(synthesizer.system_mode, mode);
+            assert_eq!(synthesizer.channels[0].get_system_mode(), mode);
+            assert_eq!(synthesizer.channels[15].get_system_mode(), mode);
+        };
+
+        assert_mode_pushed(&synthesizer, SystemMode::Gm);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
+        assert_mode_pushed(&synthesizer, SystemMode::Gs);
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]);
+        assert_mode_pushed(&synthesizer, SystemMode::Xg);
+
+        synthesizer.process_sysex(&[0x7E, 0x7F, 0x09, 0x01]);
+        assert_mode_pushed(&synthesizer, SystemMode::Gm);
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]);
+        assert_mode_pushed(&synthesizer, SystemMode::Xg);
+        synthesizer.reset();
+        assert_mode_pushed(&synthesizer, SystemMode::Gm);
+    }
+
+    #[test]
+    fn gs_and_xg_device_ids_10_to_1f_are_accepted() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_percussion_channel(9, false);
+
+        synthesizer.process_sysex(&[0x41, 0x1F, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
+        assert_eq!(synthesizer.system_mode, SystemMode::Gs);
+        assert_eq!(synthesizer.channels[9].get_bank_number(), 128);
+
+        synthesizer.process_sysex(&[0x43, 0x1F, 0x4C, 0x00, 0x00, 0x7E, 0x00]);
+        assert_eq!(synthesizer.system_mode, SystemMode::Xg);
+
+        // Device ID 0x20 falls outside the accepted 10h-1Fh range, so the message is ignored.
+        synthesizer.process_sysex(&[0x41, 0x20, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
+        assert_eq!(synthesizer.system_mode, SystemMode::Xg);
     }
 
     #[test]

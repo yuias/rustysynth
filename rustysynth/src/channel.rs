@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::system_mode::SystemMode;
+
 #[derive(Debug, PartialEq, Eq)]
 enum DataType {
     None,
@@ -72,6 +74,10 @@ pub struct Channel {
     controller_values: [u8; 128],
     poly_pressure: [u8; 128],
     pitch_bend_raw: u16,
+
+    // Pushed by the synthesizer on every mode change; decides how the bank
+    // select pair maps to the SoundFont bank.
+    system_mode: SystemMode,
 }
 
 impl Channel {
@@ -115,6 +121,7 @@ impl Channel {
             controller_values: [0; 128],
             poly_pressure: [0; 128],
             pitch_bend_raw: 8192,
+            system_mode: SystemMode::Gm,
         };
 
         channel.reset();
@@ -174,6 +181,14 @@ impl Channel {
 
     pub(crate) fn set_percussion_channel(&mut self, is_percussion: bool) {
         self.is_percussion_channel = is_percussion;
+    }
+
+    pub(crate) fn set_system_mode(&mut self, mode: SystemMode) {
+        self.system_mode = mode;
+    }
+
+    pub(crate) fn get_system_mode(&self) -> SystemMode {
+        self.system_mode
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
