@@ -32,6 +32,7 @@ mod bi_quad_filter;
 mod channel;
 mod envelope_stage;
 mod lfo;
+mod master_tune;
 mod modulation_envelope;
 mod oscillator;
 mod region_ex;

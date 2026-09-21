@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::channel::Channel;
+use crate::master_tune::MasterTune;
 use crate::instrument_region::InstrumentRegion;
 use crate::synthesizer_settings::SynthesizerSettings;
 use crate::voice::Voice;
@@ -106,7 +107,7 @@ impl VoiceCollection {
         candidate
     }
 
-    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel], master_tune: f32) {
+    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel], master_tune: MasterTune) {
         let mut i: usize = 0;
 
         loop {

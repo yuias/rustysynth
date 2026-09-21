@@ -8,6 +8,7 @@ use crate::array_math::ArrayMath;
 use crate::channel::Channel;
 use crate::chorus::Chorus;
 use crate::error::SynthesizerError;
+use crate::master_tune::MasterTune;
 use crate::region_pair::RegionPair;
 use crate::reverb::Reverb;
 use crate::soundfont::SoundFont;
@@ -54,6 +55,8 @@ pub struct Synthesizer {
 
     // Set by the last GM/GS/XG reset message; reset() returns it to GM.
     system_mode: SystemMode,
+
+    enable_master_coarse_tune_on_percussion: bool,
 }
 
 /// GS Reverb Macro (room_size, damp, width), applied with `set_reverb_room_size`,
@@ -154,6 +157,8 @@ impl Synthesizer {
             sysex_fine_tune: 0.0,
             sysex_coarse_tune: 0.0,
             system_mode: SystemMode::Gm,
+            enable_master_coarse_tune_on_percussion: settings
+                .enable_master_coarse_tune_on_percussion,
         })
     }
 
@@ -465,7 +470,19 @@ impl Synthesizer {
     }
 
     fn render_block(&mut self) {
-        let master_tune = self.master_tune + self.sysex_coarse_tune + self.sysex_fine_tune;
+        // Coarse tune transposes, so it is kept away from percussion channels unless the
+        // host asked for the previous behavior.
+        let master_tune = if self.enable_master_coarse_tune_on_percussion {
+            MasterTune::new(
+                self.master_tune + self.sysex_coarse_tune + self.sysex_fine_tune,
+                0.0,
+            )
+        } else {
+            MasterTune::new(
+                self.master_tune + self.sysex_fine_tune,
+                self.sysex_coarse_tune,
+            )
+        };
         self.voices
             .process(&self.sound_font.wave_data, &self.channels, master_tune);
         let master_volume = self.master_volume * self.sysex_master_volume;
@@ -1445,6 +1462,79 @@ mod tests {
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
         synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x7F]);
         assert_eq!(synthesizer.sysex_master_volume, 1.0);
+    }
+
+    /// Renders one note on `channel` after optionally applying a master tuning SysEx.
+    fn render_tuned_note(
+        settings: &SynthesizerSettings,
+        channel: i32,
+        sysex: Option<&[u8]>,
+    ) -> Vec<f32> {
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), settings).unwrap();
+        if let Some(sysex) = sysex {
+            synthesizer.process_sysex(sysex);
+        }
+        synthesizer.note_on(channel, 60, 100);
+
+        let mut left = vec![0_f32; 1024];
+        let mut right = vec![0_f32; 1024];
+        synthesizer.render(&mut left, &mut right);
+        left
+    }
+
+    // Master Coarse Tune: 7F 7F 04 04 00 42 = +2 semitones.
+    const COARSE_TUNE_UP: &[u8] = &[0x7F, 0x7F, 0x04, 0x04, 0x00, 0x42];
+    // Master Fine Tune: 7F 7F 04 03 00 60 = +half a semitone.
+    const FINE_TUNE_UP: &[u8] = &[0x7F, 0x7F, 0x04, 0x03, 0x00, 0x60];
+
+    #[test]
+    fn master_coarse_tune_leaves_percussion_channels_alone() {
+        let settings = SynthesizerSettings::new(44100);
+
+        // Channel 10 is percussion by default: transposing it would change which instrument
+        // each key plays, so the rendered block must be identical.
+        let plain = render_tuned_note(&settings, 9, None);
+        let tuned = render_tuned_note(&settings, 9, Some(COARSE_TUNE_UP));
+        assert_eq!(plain, tuned);
+
+        // A melodic channel is still transposed.
+        let plain = render_tuned_note(&settings, 0, None);
+        let tuned = render_tuned_note(&settings, 0, Some(COARSE_TUNE_UP));
+        assert_ne!(plain, tuned);
+    }
+
+    #[test]
+    fn master_fine_tune_still_reaches_percussion_channels() {
+        let settings = SynthesizerSettings::new(44100);
+
+        let plain = render_tuned_note(&settings, 9, None);
+        let tuned = render_tuned_note(&settings, 9, Some(FINE_TUNE_UP));
+        assert_ne!(plain, tuned);
+    }
+
+    #[test]
+    fn master_tune_api_still_reaches_percussion_channels() {
+        let settings = SynthesizerSettings::new(44100);
+        let plain = render_tuned_note(&settings, 9, None);
+
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_master_tune(2.0);
+        synthesizer.note_on(9, 60, 100);
+        let mut left = vec![0_f32; 1024];
+        let mut right = vec![0_f32; 1024];
+        synthesizer.render(&mut left, &mut right);
+
+        assert_ne!(plain, left);
+    }
+
+    #[test]
+    fn master_coarse_tune_on_percussion_setting_restores_the_previous_behavior() {
+        let mut settings = SynthesizerSettings::new(44100);
+        settings.enable_master_coarse_tune_on_percussion = true;
+
+        let plain = render_tuned_note(&settings, 9, None);
+        let tuned = render_tuned_note(&settings, 9, Some(COARSE_TUNE_UP));
+        assert_ne!(plain, tuned);
     }
 
     #[test]

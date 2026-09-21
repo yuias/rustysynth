@@ -25,6 +25,13 @@ pub struct SynthesizerSettings {
     /// The value indicating whether modulators defined in the SoundFont are applied.
     /// When disabled, only the SF2 default modulators are used.
     pub enable_soundfont_modulators: bool,
+    /// The value indicating whether Master Coarse Tune, and the GS Master Key Shift that
+    /// writes the same parameter, transpose percussion channels.
+    /// Hardware leaves rhythm parts alone, because transposing a drum kit changes which
+    /// instrument each key plays. Enable this for the previous behavior, where the offset
+    /// reached every channel. Master Fine Tune and `Synthesizer::set_master_tune` are
+    /// unaffected and always reach every channel.
+    pub enable_master_coarse_tune_on_percussion: bool,
 }
 
 impl SynthesizerSettings {
@@ -34,6 +41,7 @@ impl SynthesizerSettings {
     const DEFAULT_VOLUME_ATTACK_CURVE: VolumeAttackCurve = VolumeAttackCurve::Cubic;
     const DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF: bool = true;
     const DEFAULT_ENABLE_SOUNDFONT_MODULATORS: bool = true;
+    const DEFAULT_ENABLE_MASTER_COARSE_TUNE_ON_PERCUSSION: bool = false;
 
     /// Initializes a new instance of synthesizer settings.
     ///
@@ -50,6 +58,8 @@ impl SynthesizerSettings {
             enable_velocity_to_filter_cutoff:
                 SynthesizerSettings::DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF,
             enable_soundfont_modulators: SynthesizerSettings::DEFAULT_ENABLE_SOUNDFONT_MODULATORS,
+            enable_master_coarse_tune_on_percussion:
+                SynthesizerSettings::DEFAULT_ENABLE_MASTER_COARSE_TUNE_ON_PERCUSSION,
         }
     }
 

@@ -5,6 +5,7 @@ use std::f32::consts;
 use crate::bi_quad_filter::BiQuadFilter;
 use crate::channel::Channel;
 use crate::lfo::Lfo;
+use crate::master_tune::MasterTune;
 use crate::modulation_envelope::ModulationEnvelope;
 use crate::oscillator::Oscillator;
 use crate::region_ex::RegionEx;
@@ -247,7 +248,12 @@ impl Voice {
         self.note_gain = 0_f32;
     }
 
-    pub(crate) fn process(&mut self, data: &[i16], channels: &[Channel], master_tune: f32) -> bool {
+    pub(crate) fn process(
+        &mut self,
+        data: &[i16],
+        channels: &[Channel],
+        master_tune: MasterTune,
+    ) -> bool {
         if self.note_gain < SoundFontMath::NON_AUDIBLE {
             return false;
         }
@@ -306,6 +312,7 @@ impl Voice {
             + channel_info.get_pitch_bend()
                 * self.modulators.default_scale(DefaultModulator::PitchWheelToFineTune);
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
+        let master_tune = master_tune.for_channel(channel_info.get_is_percussion_channel());
         let base_pitch = self.key as f32 + mod_env_pitch
             + channel_pitch_change + master_tune + scale_tuning + modulator_tune;
 
