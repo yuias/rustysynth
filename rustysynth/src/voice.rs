@@ -542,7 +542,18 @@ impl Voice {
         (start, self.portamento_offset)
     }
 
-    #[cfg(test)]
+    /// Continues this note at a new key instead of retriggering it, gliding there at
+    /// `speed`. Adding to the offset already in flight keeps an unfinished glide smooth.
+    pub(crate) fn glide_to(&mut self, key: i32, speed: f32) {
+        self.portamento_offset += (self.key - key) as f32;
+        self.key = key;
+        self.portamento_speed = speed;
+        if speed <= 0_f32 {
+            // With no glide rate the note simply arrives at the new pitch.
+            self.portamento_offset = 0_f32;
+        }
+    }
+
     /// True until the note has been asked to release.
     pub(crate) fn is_playing(&self) -> bool {
         self.voice_state == VoiceState::Playing

@@ -931,20 +931,32 @@ impl Channel {
     /// Returns the portamento source key for the next note-on.
     /// If CC#84 was set, uses that value (one-shot); otherwise uses last_note_on_key.
     /// Returns -1 if no source is available.
-    pub(crate) fn consume_portamento_source(&mut self) -> i32 {
+    /// The key the next note glides from, and whether a Portamento Control message named it.
+    /// A named source glides even with the portamento switch off, which is how the GS
+    /// documentation describes the message.
+    pub(crate) fn consume_portamento_source(&mut self) -> (i32, bool) {
         if self.portamento_control >= 0 {
             let source = self.portamento_control;
             self.portamento_control = -1; // one-shot: consumed after use
-            source
+            (source, true)
         } else {
-            self.last_note_on_key
+            (self.last_note_on_key, false)
         }
     }
 
     /// Computes portamento speed in semitones per sample.
     /// Returns 0.0 if portamento is off or time is 0.
     pub(crate) fn get_portamento_speed(&self, sample_rate: i32) -> f32 {
-        if !self.portamento_on || self.portamento_time == 0 {
+        if !self.portamento_on {
+            return 0.0;
+        }
+        self.get_portamento_control_speed(sample_rate)
+    }
+
+    /// The glide rate for a source named by Portamento Control, which the GS documentation
+    /// ties to the Portamento Time alone rather than to the portamento switch.
+    pub(crate) fn get_portamento_control_speed(&self, sample_rate: i32) -> f32 {
+        if self.portamento_time == 0 {
             return 0.0;
         }
         // Exponential mapping: t=1 → ~15ms/octave, t=127 → ~10s/octave

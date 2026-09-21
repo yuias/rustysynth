@@ -9,7 +9,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 
 - MIDI control changes:
   - Bank Select LSB (CC#32), stored and exposed; used for preset lookup in XG mode.
-  - Portamento Time (CC#5), Portamento On/Off (CC#65) and Portamento Control (CC#84).
+  - Portamento Time (CC#5), Portamento On/Off (CC#65) and Portamento Control (CC#84). A Portamento Control naming a key that is already sounding continues that note at the pitch of the next note-on instead of starting a second one, and the note off of the original key no longer stops it. A source named this way glides at the portamento time even with the portamento switch off, which is how the message is documented.
   - Sostenuto (CC#66): sustains only the notes whose keys are held when the pedal goes down.
   - Soft Pedal (CC#67) and Variation Send (CC#94), stored and exposed without an audible effect yet.
   - Mono Mode (CC#126) and Poly Mode (CC#127), and the GS Mono/Poly Mode part parameter that sets the same state. A part in mono mode releases the notes it is playing before starting a new one. Legato and portamento are not applied automatically in mono mode.

@@ -333,11 +333,37 @@ impl Synthesizer {
         // Extract portamento info (&mut borrow, consumed before immutable borrow)
         let portamento_source: i32;
         let portamento_speed: f32;
+        let from_portamento_control: bool;
         {
             let ch = &mut self.channels[channel as usize];
-            portamento_source = ch.consume_portamento_source();
-            portamento_speed = ch.get_portamento_speed(self.sample_rate);
+            let (source, from_control) = ch.consume_portamento_source();
+            portamento_source = source;
+            from_portamento_control = from_control;
+            portamento_speed = if from_control {
+                ch.get_portamento_control_speed(self.sample_rate)
+            } else {
+                ch.get_portamento_speed(self.sample_rate)
+            };
             ch.set_last_note_on_key(key);
+        }
+
+        // Legato: when Portamento Control names a key that is already sounding, that note
+        // continues at the new pitch rather than a second note starting. Its key moves with
+        // it, so the note off of the original key no longer stops it.
+        if from_portamento_control && portamento_source >= 0 && portamento_source != key {
+            let mut continued = false;
+            for voice in self.voices.get_active_voices().iter_mut() {
+                if voice.channel() == channel
+                    && voice.key() == portamento_source
+                    && voice.is_playing()
+                {
+                    voice.glide_to(key, portamento_speed);
+                    continued = true;
+                }
+            }
+            if continued {
+                return;
+            }
         }
 
         let channel_info = &self.channels[channel as usize];
@@ -2105,6 +2131,64 @@ mod tests {
         let high_ratio = frequency(offset, 96) / frequency(None, 96);
         assert!(low_ratio > 1.1, "low note ratio was {}", low_ratio);
         assert!(high_ratio < 1.02, "high note ratio was {}", high_ratio);
+    }
+
+    #[test]
+    fn portamento_control_continues_a_sounding_note_instead_of_starting_another() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let sounding = |synthesizer: &mut Synthesizer| {
+            synthesizer
+                .voices
+                .active_voices()
+                .iter()
+                .filter(|voice| voice.is_playing())
+                .count()
+        };
+
+        // The sequence the GS documentation gives: note on C4, portamento control from C4,
+        // note on E4, note off C4, note off E4.
+        synthesizer.process_midi_message(0, 0xB0, 0x05, 64); // Portamento Time
+        synthesizer.process_midi_message(0, 0x90, 60, 100);
+        assert_eq!(sounding(&mut synthesizer), 1);
+
+        synthesizer.process_midi_message(0, 0xB0, 0x54, 60); // Portamento Control from C4
+        synthesizer.process_midi_message(0, 0x90, 64, 100);
+        // Still one note: the C4 voice became the E4 voice rather than a second one starting.
+        assert_eq!(sounding(&mut synthesizer), 1);
+        assert_eq!(synthesizer.voices.active_voices()[0].key(), 64);
+
+        // The note off of the original key no longer reaches it.
+        synthesizer.process_midi_message(0, 0x80, 60, 0);
+        assert_eq!(sounding(&mut synthesizer), 1);
+
+        synthesizer.process_midi_message(0, 0x80, 64, 0);
+        assert_eq!(sounding(&mut synthesizer), 0);
+    }
+
+    #[test]
+    fn portamento_control_starts_a_glide_without_the_portamento_switch() {
+        let settings = SynthesizerSettings::new(44100);
+
+        // With no voice on the source key, the note starts on its own and glides in from
+        // the source pitch, which the documentation ties to the portamento time alone.
+        let render = |control: bool| {
+            let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+            synthesizer.process_midi_message(0, 0xB0, 0x05, 64); // Portamento Time
+            if control {
+                synthesizer.process_midi_message(0, 0xB0, 0x54, 48);
+            }
+            synthesizer.note_on(0, 72, 100);
+            let mut left = vec![0_f32; 512];
+            let mut right = vec![0_f32; 512];
+            synthesizer.render(&mut left, &mut right);
+            left
+        };
+
+        // The portamento switch (CC#65) is never sent, so this fails if the glide still
+        // depends on it.
+        assert_ne!(render(true), render(false));
     }
 
     #[test]
