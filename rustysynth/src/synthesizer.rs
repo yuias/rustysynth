@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::array_math::ArrayMath;
-use crate::channel::Channel;
+use crate::channel::{Channel, Rx};
 use crate::chorus::Chorus;
 use crate::error::SynthesizerError;
 use crate::master_tune::MasterTune;
@@ -58,6 +58,34 @@ pub struct Synthesizer {
 
     enable_master_coarse_tune_on_percussion: bool,
     enable_generator_range_clamp: bool,
+}
+
+/// True when the part receives this particular control change, on top of the switch that
+/// covers control changes as a whole.
+///
+/// Data entry is shared between RPN and NRPN, so which switch applies depends on which
+/// parameter number the part is currently collecting.
+fn receives_controller(channel: &Channel, controller: i32) -> bool {
+    match controller {
+        0x01 | 0x21 => channel.receives(Rx::Modulation),
+        0x07 | 0x27 => channel.receives(Rx::Volume),
+        0x0A | 0x2A => channel.receives(Rx::Panpot),
+        0x0B | 0x2B => channel.receives(Rx::Expression),
+        0x40 => channel.receives(Rx::Hold),
+        0x05 | 0x41 | 0x54 => channel.receives(Rx::Portamento),
+        0x42 => channel.receives(Rx::Sostenuto),
+        0x43 => channel.receives(Rx::Soft),
+        0x62 | 0x63 => channel.receives(Rx::Nrpn),
+        0x64 | 0x65 => channel.receives(Rx::Rpn),
+        0x06 | 0x26 => {
+            if channel.is_nrpn_active() {
+                channel.receives(Rx::Nrpn)
+            } else {
+                channel.receives(Rx::Rpn)
+            }
+        }
+        _ => true,
+    }
 }
 
 /// GS Reverb Macro (room_size, damp, width), applied with `set_reverb_room_size`,
@@ -178,6 +206,21 @@ impl Synthesizer {
         }
 
         let channel_info = &mut self.channels[channel as usize];
+
+        // GS Patch Part receive switches. A message the part does not receive is discarded
+        // before it reaches any state, including the raw controller array.
+        let receives = match command {
+            0x80 | 0x90 => channel_info.receives(Rx::Note),
+            0xA0 => channel_info.receives(Rx::PolyPressure),
+            0xB0 => channel_info.receives(Rx::ControlChange) && receives_controller(channel_info, data1),
+            0xC0 => channel_info.receives(Rx::ProgramChange),
+            0xD0 => channel_info.receives(Rx::ChannelPressure),
+            0xE0 => channel_info.receives(Rx::PitchBend),
+            _ => true,
+        };
+        if !receives {
+            return;
+        }
 
         match command {
             0x80 => self.note_off(channel, data1),       // Note Off
@@ -837,6 +880,32 @@ impl Synthesizer {
                 let midi_channel = Synthesizer::gs_part_to_channel(addr_mid);
                 if midi_channel < self.channels.len() {
                     let channel = &mut self.channels[midi_channel];
+
+                    // Receive switches: 03h-12h, in the order of the `Rx` variants.
+                    const RX_SWITCHES: [Rx; 16] = [
+                        Rx::PitchBend,
+                        Rx::ChannelPressure,
+                        Rx::ProgramChange,
+                        Rx::ControlChange,
+                        Rx::PolyPressure,
+                        Rx::Note,
+                        Rx::Rpn,
+                        Rx::Nrpn,
+                        Rx::Modulation,
+                        Rx::Volume,
+                        Rx::Panpot,
+                        Rx::Expression,
+                        Rx::Hold,
+                        Rx::Portamento,
+                        Rx::Sostenuto,
+                        Rx::Soft,
+                    ];
+                    if (0x03..=0x12).contains(&addr_low) {
+                        let rx = RX_SWITCHES[(addr_low - 0x03) as usize];
+                        channel.set_rx_switch(rx, vv != 0);
+                        return;
+                    }
+
                     match addr_low {
                         // Pitch Key Shift: 28h-58h is -24 to +24 semitones.
                         0x16 => {
@@ -1829,6 +1898,60 @@ mod tests {
 
         synthesizer.note_on(0, 73, 100);
         assert_eq!(synthesizer.voices.active_voices().len(), 1);
+    }
+
+    #[test]
+    fn gs_receive_switches_discard_the_messages_they_cover() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 1 is MIDI channel 0: 41 1n 42 12 40 11 nn vv.
+        let rx = |synthesizer: &mut Synthesizer, nn: u8, on: u8| {
+            synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, nn, on]);
+        };
+
+        // Rx. NOTE MESSAGE off silences the part.
+        rx(&mut synthesizer, 0x08, 0);
+        synthesizer.process_midi_message(0, 0x90, 60, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 0);
+        rx(&mut synthesizer, 0x08, 1);
+        synthesizer.process_midi_message(0, 0x90, 60, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 1);
+
+        // Rx. VOLUME off leaves the channel volume alone, and the raw controller with it.
+        let volume = synthesizer.channels[0].get_volume();
+        rx(&mut synthesizer, 0x0C, 0);
+        synthesizer.process_midi_message(0, 0xB0, 0x07, 10);
+        assert_eq!(synthesizer.channels[0].get_volume(), volume);
+        assert_eq!(synthesizer.channels[0].get_controller_value(0x07), 100);
+
+        // Another controller still gets through, so the gate is per parameter.
+        synthesizer.process_midi_message(0, 0xB0, 0x0A, 100);
+        assert_eq!(synthesizer.channels[0].get_controller_value(0x0A), 100);
+
+        // Rx. CONTROL CHANGE off blocks every controller.
+        rx(&mut synthesizer, 0x06, 0);
+        synthesizer.process_midi_message(0, 0xB0, 0x0A, 20);
+        assert_eq!(synthesizer.channels[0].get_controller_value(0x0A), 100);
+        rx(&mut synthesizer, 0x06, 1);
+
+        // Rx. NRPN off blocks the parameter number and the data entry that follows it,
+        // while RPN keeps working.
+        rx(&mut synthesizer, 0x0A, 0);
+        synthesizer.process_midi_message(0, 0xB0, 0x63, 0x01);
+        synthesizer.process_midi_message(0, 0xB0, 0x62, 0x20);
+        synthesizer.process_midi_message(0, 0xB0, 0x06, 100);
+        assert_eq!(synthesizer.channels[0].get_brightness_raw(), 64);
+
+        synthesizer.process_midi_message(0, 0xB0, 0x65, 0);
+        synthesizer.process_midi_message(0, 0xB0, 0x64, 0);
+        synthesizer.process_midi_message(0, 0xB0, 0x06, 4);
+        assert_eq!(synthesizer.channels[0].get_pitch_bend_range(), 4.0);
+
+        // Rx. PITCH BEND off freezes the bend.
+        rx(&mut synthesizer, 0x03, 0);
+        synthesizer.process_midi_message(0, 0xE0, 0, 100);
+        assert_eq!(synthesizer.channels[0].get_pitch_bend(), 0.0);
     }
 
     #[test]

@@ -22,6 +22,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
   - Universal Master Volume, Master Fine Tune and Master Coarse Tune.
   - GS Use for Rhythm Part (switches a part between melodic and drum banks).
   - GS Scale Tuning (all 12 notes of a part at once).
+  - GS Patch Part receive switches (Rx. Pitch Bend, Channel Pressure, Program Change, Control Change, Poly Pressure, Note, RPN, NRPN, Modulation, Volume, Panpot, Expression, Hold 1, Portamento, Sostenuto and Soft). A message a part does not receive is discarded before it reaches any channel state. All switches start on and a reset message turns them all back on, so a file that sends none behaves as before; GS powers up with Rx. NRPN off, which is not followed here, because this is not a GS device and XG files use NRPN without sending a GS Reset.
   - GS Patch Part parameters that a controller can also reach: Part Level, Part Panpot, Reverb Send Level and Chorus Send Level. Also Pitch Key Shift, which transposes a part by up to two octaves on top of the RPN coarse tune, and Keyboard Range, outside which the part does not sound a key. A panpot of 0 asks for a random position and is taken as centre.
   - GS drum instrument NRPNs, which address one note of a drum kit: pitch coarse, level, panpot, reverb send and chorus send. A panpot of 0 asks for a random position and is taken as centre. Like the other GS NRPNs, these survive Reset All Controllers.
   - GS Master Volume, Master Key Shift, Reverb Macro, Reverb Level and Chorus Macro (Chorus Level is not supported).

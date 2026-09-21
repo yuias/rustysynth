@@ -2,6 +2,31 @@
 
 use crate::system_mode::SystemMode;
 
+/// A GS Patch Part receive switch, as the bit it occupies in `Channel::rx_switches`. The
+/// order follows the GS parameter addresses 03h to 12h.
+#[derive(Clone, Copy)]
+pub(crate) enum Rx {
+    PitchBend = 0,
+    ChannelPressure = 1,
+    ProgramChange = 2,
+    ControlChange = 3,
+    PolyPressure = 4,
+    Note = 5,
+    Rpn = 6,
+    Nrpn = 7,
+    Modulation = 8,
+    Volume = 9,
+    Panpot = 10,
+    Expression = 11,
+    Hold = 12,
+    Portamento = 13,
+    Sostenuto = 14,
+    Soft = 15,
+}
+
+/// Every receive switch on.
+const ALL_RX_SWITCHES: u16 = u16::MAX;
+
 /// Marks a GS drum instrument parameter the file has not set, so that the value from the
 /// SoundFont is used instead. The parameters themselves only reach 127.
 const UNSET_DRUM_PARAMETER: u8 = 0xFF;
@@ -36,6 +61,9 @@ pub struct Channel {
     coarse_tune: i16,
     // GS Pitch Key Shift, a per-part transposition separate from the RPN coarse tune.
     key_shift: i16,
+    // GS Patch Part receive switches, one bit per `Rx`. All on unless a GS message says
+    // otherwise, so a file that sends none behaves as though the switches did not exist.
+    rx_switches: u16,
     // GS Keyboard Range: notes outside it are not sounded by this part.
     keyboard_range_low: u8,
     keyboard_range_high: u8,
@@ -116,6 +144,7 @@ impl Channel {
             pitch_bend_range: 0,
             coarse_tune: 0,
             key_shift: 0,
+            rx_switches: ALL_RX_SWITCHES,
             keyboard_range_low: 0,
             keyboard_range_high: 127,
             fine_tune: 0,
@@ -172,6 +201,7 @@ impl Channel {
         self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
         self.key_shift = 0;
+        self.rx_switches = ALL_RX_SWITCHES;
         self.keyboard_range_low = 0;
         self.keyboard_range_high = 127;
         self.fine_tune = 8192;
@@ -273,6 +303,26 @@ impl Channel {
     /// GS Pitch Key Shift, in semitones.
     pub(crate) fn set_key_shift(&mut self, semitones: i32) {
         self.key_shift = semitones.clamp(-24, 24) as i16;
+    }
+
+    /// Sets one GS Patch Part receive switch.
+    pub(crate) fn set_rx_switch(&mut self, rx: Rx, on: bool) {
+        let bit = 1 << rx as u16;
+        if on {
+            self.rx_switches |= bit;
+        } else {
+            self.rx_switches &= !bit;
+        }
+    }
+
+    /// True when the part acts on the messages this switch covers.
+    pub(crate) fn receives(&self, rx: Rx) -> bool {
+        self.rx_switches & (1 << rx as u16) != 0
+    }
+
+    /// True when the part is currently collecting an NRPN rather than an RPN.
+    pub(crate) fn is_nrpn_active(&self) -> bool {
+        self.last_data_type == DataType::Nrpn
     }
 
     /// GS Keyboard Range. A low bound above the high bound silences the part, which is what
