@@ -334,8 +334,21 @@ impl Voice {
                 * self.modulators.default_scale(DefaultModulator::PitchWheelToFineTune);
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
         let master_tune = master_tune.for_channel(channel_info.get_is_percussion_channel());
-        let base_pitch = self.key as f32 + mod_env_pitch + channel_pitch_change + master_tune
+        let mut base_pitch = self.key as f32 + mod_env_pitch + channel_pitch_change + master_tune
             + scale_tuning + modulator_tune + self.drum_pitch_coarse;
+
+        // GS Pitch Offset Fine shifts the sounding frequency by a fixed number of hertz, so
+        // it has to be converted at the pitch the note has reached rather than added to it.
+        let pitch_offset_hz = channel_info.get_pitch_offset_hz();
+        if pitch_offset_hz != 0_f32 {
+            let hertz = SoundFontMath::key_number_to_hertz(base_pitch);
+            let shifted = hertz + pitch_offset_hz;
+            // A large negative offset can reach or pass zero on the lowest notes, where no
+            // pitch exists to play; leave those unshifted.
+            if shifted > 0_f32 {
+                base_pitch += 12_f32 * (shifted / hertz).log2();
+            }
+        }
 
         let (portamento_start, portamento_end) = self.advance_portamento();
 

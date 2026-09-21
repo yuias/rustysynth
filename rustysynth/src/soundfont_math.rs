@@ -37,6 +37,11 @@ impl SoundFontMath {
         8.176_f32 * 2_f32.powf((1_f32 / 1200_f32) * x)
     }
 
+    /// The frequency of a MIDI key number, with A4 (key 69) at 440 Hz.
+    pub(crate) fn key_number_to_hertz(key: f32) -> f32 {
+        440_f32 * 2_f32.powf((key - 69_f32) / 12_f32)
+    }
+
     pub(crate) fn cents_to_multiplying_factor(x: f32) -> f32 {
         2_f32.powf((1_f32 / 1200_f32) * x)
     }

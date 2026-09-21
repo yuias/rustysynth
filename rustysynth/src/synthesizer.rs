@@ -75,6 +75,8 @@ fn receives_controller(channel: &Channel, controller: i32) -> bool {
         0x05 | 0x41 | 0x54 => channel.receives(Rx::Portamento),
         0x42 => channel.receives(Rx::Sostenuto),
         0x43 => channel.receives(Rx::Soft),
+        0x00 => channel.receives(Rx::BankSelect),
+        0x20 => channel.receives(Rx::BankSelectLsb),
         0x62 | 0x63 => channel.receives(Rx::Nrpn),
         0x64 | 0x65 => channel.receives(Rx::Rpn),
         0x06 | 0x26 => {
@@ -921,12 +923,30 @@ impl Synthesizer {
                         channel.set_rx_switch(rx, vv != 0);
                         return;
                     }
+                    if addr_low == 0x23 || addr_low == 0x24 {
+                        let rx = if addr_low == 0x23 {
+                            Rx::BankSelect
+                        } else {
+                            Rx::BankSelectLsb
+                        };
+                        channel.set_rx_switch(rx, vv != 0);
+                        return;
+                    }
 
                     match addr_low {
                         // Mono/Poly Mode, the same parameter as controllers 126 and 127.
                         0x13 => {
                             channel.set_mono_mode(vv == 0);
                             self.note_off_all_channel(midi_channel as i32, false);
+                            return;
+                        }
+                        // Pitch Offset Fine: two bytes carrying one nibble each, 80h = none.
+                        0x17 => {
+                            if let Some(&low) = addr_and_data.get(4) {
+                                channel.set_pitch_offset_fine(
+                                    ((vv as i32 & 0x0F) << 4) | (low as i32 & 0x0F),
+                                );
+                            }
                             return;
                         }
                         // Pitch Key Shift: 28h-58h is -24 to +24 semitones.
@@ -2026,6 +2046,65 @@ mod tests {
 
         synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x13, 0x01]);
         assert!(!synthesizer.channels[0].get_is_mono_mode());
+    }
+
+    #[test]
+    fn gs_rx_bank_select_blocks_the_bank_controllers() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 1 is MIDI channel 0: 40 11 23 = Rx. Bank Select, 24 = Rx. Bank Select LSB.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x23, 0x00]);
+        synthesizer.process_midi_message(0, 0xB0, 0x00, 5);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 0);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x23, 0x01]);
+        synthesizer.process_midi_message(0, 0xB0, 0x00, 5);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 5);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x24, 0x00]);
+        synthesizer.process_midi_message(0, 0xB0, 0x20, 7);
+        assert_eq!(synthesizer.channels[0].get_bank_lsb(), 0);
+    }
+
+    #[test]
+    fn gs_pitch_offset_fine_shifts_by_a_fixed_number_of_hertz() {
+        let settings = SynthesizerSettings::new(44100);
+
+        // The value is nibblized across two bytes, 80h = no offset, and one step is 0.1 Hz.
+        let stored = |high: u8, low: u8| {
+            let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+            synthesizer
+                .process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x17, high, low]);
+            synthesizer.channels[0].get_pitch_offset_hz()
+        };
+        assert_eq!(stored(0x08, 0x05), 0.5);
+        assert_eq!(stored(0x0F, 0x08), 12.0);
+        assert_eq!(stored(0x00, 0x08), -12.0);
+        assert_eq!(stored(0x08, 0x00), 0.0);
+
+        // Counting zero crossings of the rendered sine gives its frequency closely enough
+        // to compare one render against another.
+        let frequency = |offset: Option<(u8, u8)>, key: i32| {
+            let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+            if let Some((high, low)) = offset {
+                synthesizer
+                    .process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x17, high, low]);
+            }
+            synthesizer.note_on(0, key, 100);
+            let mut left = vec![0_f32; 44100];
+            let mut right = vec![0_f32; 44100];
+            synthesizer.render(&mut left, &mut right);
+            left.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as f32
+        };
+
+        // A fixed offset in hertz is a far wider interval on a low note than on a high one,
+        // which is what separates this parameter from every other tuning control.
+        let offset = Some((0x0F, 0x08)); // +12 Hz
+        let low_ratio = frequency(offset, 36) / frequency(None, 36);
+        let high_ratio = frequency(offset, 96) / frequency(None, 96);
+        assert!(low_ratio > 1.1, "low note ratio was {}", low_ratio);
+        assert!(high_ratio < 1.02, "high note ratio was {}", high_ratio);
     }
 
     #[test]

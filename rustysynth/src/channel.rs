@@ -22,10 +22,14 @@ pub(crate) enum Rx {
     Portamento = 13,
     Sostenuto = 14,
     Soft = 15,
+    // Bank select is handled apart from the other control changes, so its switches sit
+    // after the block that follows the GS addresses.
+    BankSelect = 16,
+    BankSelectLsb = 17,
 }
 
 /// Every receive switch on.
-const ALL_RX_SWITCHES: u16 = u16::MAX;
+const ALL_RX_SWITCHES: u32 = u32::MAX;
 
 /// Marks a GS drum instrument parameter the file has not set, so that the value from the
 /// SoundFont is used instead. The parameters themselves only reach 127.
@@ -66,7 +70,11 @@ pub struct Channel {
     mono_mode: bool,
     // GS Patch Part receive switches, one bit per `Rx`. All on unless a GS message says
     // otherwise, so a file that sends none behaves as though the switches did not exist.
-    rx_switches: u16,
+    rx_switches: u32,
+    // GS Pitch Offset Fine, in hertz. Unlike every other tuning parameter this shifts the
+    // sounding frequency by a fixed amount rather than by a ratio, which detunes low notes
+    // far more than high ones; that is what the parameter is for.
+    pitch_offset_hz: f32,
     // GS Keyboard Range: notes outside it are not sounded by this part.
     keyboard_range_low: u8,
     keyboard_range_high: u8,
@@ -149,6 +157,7 @@ impl Channel {
             key_shift: 0,
             mono_mode: false,
             rx_switches: ALL_RX_SWITCHES,
+            pitch_offset_hz: 0_f32,
             keyboard_range_low: 0,
             keyboard_range_high: 127,
             fine_tune: 0,
@@ -207,6 +216,7 @@ impl Channel {
         self.key_shift = 0;
         self.mono_mode = false;
         self.rx_switches = ALL_RX_SWITCHES;
+        self.pitch_offset_hz = 0_f32;
         self.keyboard_range_low = 0;
         self.keyboard_range_high = 127;
         self.fine_tune = 8192;
@@ -319,9 +329,19 @@ impl Channel {
         self.mono_mode
     }
 
+    /// GS Pitch Offset Fine, from the nibblized pair 08h-F8h where 80h is no offset.
+    pub(crate) fn set_pitch_offset_fine(&mut self, nibblized: i32) {
+        self.pitch_offset_hz = (nibblized.clamp(0x08, 0xF8) - 0x80) as f32 / 10.0;
+    }
+
+    /// The fixed frequency offset in hertz, 0 when the part has none.
+    pub fn get_pitch_offset_hz(&self) -> f32 {
+        self.pitch_offset_hz
+    }
+
     /// Sets one GS Patch Part receive switch.
     pub(crate) fn set_rx_switch(&mut self, rx: Rx, on: bool) {
-        let bit = 1 << rx as u16;
+        let bit = 1 << rx as u32;
         if on {
             self.rx_switches |= bit;
         } else {
@@ -331,7 +351,7 @@ impl Channel {
 
     /// True when the part acts on the messages this switch covers.
     pub(crate) fn receives(&self, rx: Rx) -> bool {
-        self.rx_switches & (1 << rx as u16) != 0
+        self.rx_switches & (1 << rx as u32) != 0
     }
 
     /// True when the part is currently collecting an NRPN rather than an RPN.
