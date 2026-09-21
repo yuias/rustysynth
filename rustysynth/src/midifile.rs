@@ -371,26 +371,32 @@ impl MidiFile {
                     last_status = 0;
                     continue;
                 }
-                0xFF => match BinaryReader::read_u8(reader)? {
-                    0x2F => {
-                        BinaryReader::read_u8(reader)?;
-                        messages.push(Message::EndOfTrack);
-                        ticks.push(tick);
+                0xFF => {
+                    match BinaryReader::read_u8(reader)? {
+                        0x2F => {
+                            BinaryReader::read_u8(reader)?;
+                            messages.push(Message::EndOfTrack);
+                            ticks.push(tick);
 
-                        // Some MIDI files may have events inserted after the EOT.
-                        // Such events should be ignored.
-                        if reader.bytes_read() < size {
-                            BinaryReader::discard_data(reader, size - reader.bytes_read())?;
+                            // Some MIDI files may have events inserted after the EOT.
+                            // Such events should be ignored.
+                            if reader.bytes_read() < size {
+                                BinaryReader::discard_data(reader, size - reader.bytes_read())?;
+                            }
+
+                            return Ok((messages, ticks));
                         }
+                        0x51 => {
+                            messages.push(Message::tempo_change(MidiFile::read_tempo(reader)?));
+                            ticks.push(tick);
+                        }
+                        _ => MidiFile::discard_data(reader)?,
+                    }
 
-                        return Ok((messages, ticks));
-                    }
-                    0x51 => {
-                        messages.push(Message::tempo_change(MidiFile::read_tempo(reader)?));
-                        ticks.push(tick);
-                    }
-                    _ => MidiFile::discard_data(reader)?,
-                },
+                    // Meta events cancel running status per the SMF spec, the same as SysEx.
+                    last_status = 0;
+                    continue;
+                }
                 _ => {
                     let command = first & 0xF0;
                     if command == 0xC0 || command == 0xD0 {
@@ -584,6 +590,31 @@ mod tests {
             .filter(|message| matches!(message, Message::Normal { status: 0x90, .. }))
             .count();
         assert_eq!(note_ons, 1);
+    }
+
+    #[test]
+    fn running_status_is_not_reused_after_a_meta_event() {
+        let track = vec![
+            0x00, 0x90, 0x3C,
+            0x64, // Note On, ch0, key 60, velocity 100 (sets running status)
+            0x00, 0xFF, 0x01, 0x02, 0x68, 0x69, // Text meta event
+            0x00, 0x3E,
+            0x64, // Bare data bytes: would be a Note On only if running status survived
+        ];
+
+        let midi_file = parse(480, track).unwrap();
+        let note_ons = midi_file
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Normal { status: 0x90, .. }))
+            .count();
+        assert_eq!(note_ons, 1);
+
+        // The bare bytes must not inherit the meta event's FF status either.
+        assert!(!midi_file
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::Normal { status: 0xFF, .. })));
     }
 
     #[test]
