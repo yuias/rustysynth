@@ -28,6 +28,9 @@ pub(crate) struct Chorus {
     prev_out_r: f32,
 
     sample_rate: i32,
+    // Last delay passed to `set_params_with_feedback`, kept only for readback since the
+    // delay table itself is derived and not stored as a single value.
+    delay: f64,
 }
 
 impl Chorus {
@@ -53,6 +56,7 @@ impl Chorus {
             prev_out_l: 0.0,
             prev_out_r: 0.0,
             sample_rate,
+            delay: 0.0,
         };
         chorus.set_params(sample_rate, delay, depth, frequency);
         chorus
@@ -160,6 +164,7 @@ impl Chorus {
     ) {
         self.sample_rate = sample_rate;
         self.feedback = feedback as f32;
+        self.delay = delay;
 
         self.buffer_l = vec![0_f32; ((sample_rate as f64) * (delay + depth)) as usize + 2];
         self.buffer_r = vec![0_f32; ((sample_rate as f64) * (delay + depth)) as usize + 2];
@@ -198,6 +203,16 @@ impl Chorus {
     /// Set the feedback gain directly (0.0 to <1.0).
     pub(crate) fn set_feedback(&mut self, value: f32) {
         self.feedback = value.clamp(0.0, 0.95);
+    }
+
+    /// Current feedback gain.
+    pub(crate) fn get_feedback(&self) -> f32 {
+        self.feedback
+    }
+
+    /// Last delay passed to `set_params_with_feedback`.
+    pub(crate) fn get_delay(&self) -> f64 {
+        self.delay
     }
 
     pub(crate) fn mute(&mut self) {

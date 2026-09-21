@@ -56,6 +56,21 @@ pub struct Synthesizer {
     system_mode: SystemMode,
 }
 
+/// GS Reverb Macro (room_size, damp, width), applied with `set_reverb_room_size`,
+/// `set_reverb_damp` and `set_reverb_width`. There is no delay algorithm available, so this
+/// is an approximation of the GS reverb characters using only those three parameters. Macro
+/// 4 (Hall 2) is the GS power-on default and maps to the reverb's built-in defaults.
+const GS_REVERB_MACROS: [(f32, f32, f32); 8] = [
+    (0.30, 0.70, 0.70), // 0: Room 1
+    (0.38, 0.60, 0.80), // 1: Room 2
+    (0.44, 0.50, 0.90), // 2: Room 3
+    (0.56, 0.45, 1.00), // 3: Hall 1
+    (0.50, 0.50, 1.00), // 4: Hall 2
+    (0.60, 0.20, 1.00), // 5: Plate
+    (0.20, 0.30, 0.40), // 6: Delay
+    (0.20, 0.30, 1.00), // 7: Panning Delay
+];
+
 impl Synthesizer {
     /// The number of channels.
     pub const CHANNEL_COUNT: usize = 16;
@@ -605,14 +620,19 @@ impl Synthesizer {
     /// Processes a SysEx message.
     ///
     /// Supports:
-    /// - Universal Real-Time: Master Volume (04 01), Master Fine Tune (04 03),
-    ///   Master Coarse Tune (04 04)
-    /// - GM System On (7E xx 09 01) → reset
-    /// - GS Reset (41 1n 42 12 40 00 7F 00 41), device IDs 10h-1Fh → reset
-    /// - GS Use for Rhythm Part (41 1n 42 12 40 1x 15 vv) and Scale Tuning (41 1n 42 12 40 1x 40 ...)
-    /// - XG System On (43 1n 4C 00 00 7E 00), device IDs 10h-1Fh → reset
-    /// - XG Part Mode (43 1n 4C 08 pp 07 vv), device IDs 10h-1Fh → sets/clears the
-    ///   percussion flag of MIDI channel pp
+    /// - Universal Non-Real-Time: GM System On (7E xx 09 01) → reset
+    /// - Universal Real-Time: Master Volume (7F xx 04 01), Master Fine Tune (7F xx 04 03),
+    ///   Master Coarse Tune (7F xx 04 04)
+    /// - Roland GS, device IDs 10h-1Fh (41 1n 42 12 ...):
+    ///   - GS Reset (40 00 7F 00) → reset
+    ///   - Master Volume (40 00 04) and Master Key Shift (40 00 05), applied through the same
+    ///     fields as the Universal Real-Time Master Volume/Coarse Tune messages
+    ///   - Reverb Macro (40 01 30) and Reverb Level (40 01 33)
+    ///   - Chorus Macro (40 01 38); GS Chorus Level (40 01 3A) is NOT supported
+    ///   - Use for Rhythm Part (40 1x 15) and Scale Tuning (40 1x 40)
+    /// - Yamaha XG, device IDs 10h-1Fh (43 1n 4C ...):
+    ///   - XG System On (00 00 7E 00) → reset
+    ///   - XG Part Mode (08 pp 07 vv) → sets/clears the percussion flag of MIDI channel pp
     ///
     /// The data slice should NOT include the leading F0 or trailing F7.
     pub fn process_sysex(&mut self, data: &[u8]) {
@@ -702,7 +722,7 @@ impl Synthesizer {
         }
     }
 
-    /// Processes GS DT1 payload (after 41 10 42 12 header).
+    /// Processes GS DT1 payload (after 41 1n 42 12 header).
     fn process_gs_sysex(&mut self, addr_and_data: &[u8]) {
         if addr_and_data.len() < 3 {
             return;
@@ -711,11 +731,73 @@ impl Synthesizer {
         let addr_high = addr_and_data[0];
         let addr_mid = addr_and_data[1];
         let addr_low = addr_and_data[2];
+        // The checksum trailing the value is not validated; reading the value with `.get(3)`
+        // means a message without it still works.
+        let value = addr_and_data.get(3).copied();
 
         // GS Reset: 40 00 7F 00 [checksum]
         if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x7F {
-            if addr_and_data.len() >= 4 && addr_and_data[3] == 0x00 {
+            if value == Some(0x00) {
                 self.reset_system(SystemMode::Gs);
+            }
+            return;
+        }
+
+        // Master Volume: 40 00 04 vv [checksum]. Shares the Universal Real-Time field: on
+        // hardware they are the same parameter, and a separate field would apply twice.
+        if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x04 {
+            if let Some(vv) = value {
+                self.sysex_master_volume = vv as f32 / 127.0;
+            }
+            return;
+        }
+
+        // Master Key Shift: 40 00 05 vv [checksum], semitones, 0x40 = no shift.
+        if addr_high == 0x40 && addr_mid == 0x00 && addr_low == 0x05 {
+            if let Some(vv) = value {
+                self.sysex_coarse_tune = vv as f32 - 64.0;
+            }
+            return;
+        }
+
+        // Reverb Macro: 40 01 30 vv [checksum]. Approximates GS reverb characters with the
+        // available room-size/damp/width parameters; there is no delay algorithm.
+        if addr_high == 0x40 && addr_mid == 0x01 && addr_low == 0x30 {
+            if let Some(vv) = value {
+                if let Some(&(room_size, damp, width)) = GS_REVERB_MACROS.get(vv as usize) {
+                    self.set_reverb_room_size(room_size);
+                    self.set_reverb_damp(damp);
+                    self.set_reverb_width(width);
+                }
+            }
+            return;
+        }
+
+        // Reverb Level: 40 01 33 vv [checksum]. 64 is the default level.
+        if addr_high == 0x40 && addr_mid == 0x01 && addr_low == 0x33 {
+            if let Some(vv) = value {
+                self.set_reverb_wet(vv as f32 / 64.0 * Reverb::INITIAL_WET);
+            }
+            return;
+        }
+
+        // Chorus Macro: 40 01 38 vv [checksum]. `set_chorus_type` sets feedback from its
+        // preset and `set_chorus_params` keeps the current feedback, so for the Short Delay
+        // macros the feedback call must come after `set_chorus_params`.
+        if addr_high == 0x40 && addr_mid == 0x01 && addr_low == 0x38 {
+            if let Some(vv) = value {
+                match vv {
+                    0..=5 => self.set_chorus_type(vv as i32),
+                    6 => {
+                        self.set_chorus_params(0.020, 0.0001, 1.0);
+                        self.set_chorus_feedback(0.0);
+                    }
+                    7 => {
+                        self.set_chorus_params(0.020, 0.0001, 1.0);
+                        self.set_chorus_feedback(0.5);
+                    }
+                    _ => {}
+                }
             }
             return;
         }
@@ -1363,5 +1445,48 @@ mod tests {
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
         synthesizer.process_sysex(&[0x7F, 0x7F, 0x04, 0x01, 0x7F]);
         assert_eq!(synthesizer.sysex_master_volume, 1.0);
+    }
+
+    #[test]
+    fn gs_master_volume_and_key_shift_use_sysex_fields() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // GS Master Volume: 40 00 04 vv
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x04, 0x40]);
+        assert!((synthesizer.sysex_master_volume - 64.0 / 127.0).abs() < 1e-5);
+
+        // GS Master Key Shift: 40 00 05 vv, 0x42 = +2 semitones.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x05, 0x42]);
+        assert_eq!(synthesizer.sysex_coarse_tune, 2.0);
+
+        synthesizer.reset();
+        assert_eq!(synthesizer.sysex_master_volume, 1.0);
+        assert_eq!(synthesizer.sysex_coarse_tune, 0.0);
+    }
+
+    #[test]
+    fn gs_reverb_macro_sets_effect_parameters() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let assert_reverb = |synthesizer: &Synthesizer, room_size: f32, damp: f32, width: f32| {
+            let reverb = &synthesizer.effects.as_ref().unwrap().reverb;
+            assert!((reverb.get_room_size() - room_size).abs() < 1e-5);
+            assert!((reverb.get_damp() - damp).abs() < 1e-5);
+            assert!((reverb.get_width() - width).abs() < 1e-5);
+        };
+
+        // GS Reverb Macro 0 (Room 1): 40 01 30 00
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x00]);
+        assert_reverb(&synthesizer, 0.30, 0.70, 0.70);
+
+        // GS Reverb Macro 4 (Hall 2): 40 01 30 04
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x04]);
+        assert_reverb(&synthesizer, 0.50, 0.50, 1.00);
+
+        // Out-of-range macro 8 is ignored, so the previous parameters are unchanged.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x08]);
+        assert_reverb(&synthesizer, 0.50, 0.50, 1.00);
     }
 }

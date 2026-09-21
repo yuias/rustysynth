@@ -30,6 +30,9 @@ pub(crate) struct Reverb {
     wet1: f32,
     wet2: f32,
     width: f32,
+    // `set_room_size` only stores derived per-line feedback gains, so the room size itself
+    // needs a dedicated field for readback.
+    room_size: f32,
 }
 
 impl Reverb {
@@ -39,7 +42,7 @@ impl Reverb {
     const OFFSET_ROOM: f32 = 0.7;
     const INITIAL_ROOM: f32 = 0.5;
     const INITIAL_DAMP: f32 = 0.5;
-    const INITIAL_WET: f32 = 1.0 / Reverb::SCALE_WET;
+    pub(crate) const INITIAL_WET: f32 = 1.0 / Reverb::SCALE_WET;
     const INITIAL_WIDTH: f32 = 1.0;
     const INPUT_GAIN: f32 = 0.015;
 
@@ -106,6 +109,7 @@ impl Reverb {
             wet1: 0.0,
             wet2: 0.0,
             width: 0.0,
+            room_size: 0.0,
         };
 
         reverb.set_wet(Self::INITIAL_WET);
@@ -240,6 +244,7 @@ impl Reverb {
     }
 
     pub(crate) fn set_room_size(&mut self, value: f32) {
+        self.room_size = value;
         // Standard T60-controlled FDN feedback (Jot): g_i = 10^(-3*L_i/(T60*fs)) makes every
         // line, regardless of its length, decay at exactly -60/T60 dB per second, so the mix
         // as a whole decays at the target T60.
@@ -267,6 +272,26 @@ impl Reverb {
     fn update_wet(&mut self) {
         self.wet1 = self.wet * (self.width / 2.0 + 0.5);
         self.wet2 = self.wet * ((1.0 - self.width) / 2.0);
+    }
+
+    /// Last value passed to `set_room_size`.
+    pub(crate) fn get_room_size(&self) -> f32 {
+        self.room_size
+    }
+
+    /// Last value passed to `set_damp`, undoing the internal `SCALE_DAMP` scaling.
+    pub(crate) fn get_damp(&self) -> f32 {
+        self.damp_coeff / Self::SCALE_DAMP
+    }
+
+    /// Last value passed to `set_wet`, undoing the internal `SCALE_WET` scaling.
+    pub(crate) fn get_wet(&self) -> f32 {
+        self.wet / Self::SCALE_WET
+    }
+
+    /// Last value passed to `set_width`.
+    pub(crate) fn get_width(&self) -> f32 {
+        self.width
     }
 }
 
