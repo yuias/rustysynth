@@ -1663,6 +1663,50 @@ mod tests {
     }
 
     #[test]
+    fn gs_drum_nrpns_reach_the_voice() {
+        // NRPN coarse is CC#99, NRPN fine is CC#98, data entry coarse is CC#6.
+        let send_drum_nrpn = |synthesizer: &mut Synthesizer, msb: i32, note: i32, value: i32| {
+            synthesizer.process_midi_message(9, 0xB0, 0x63, msb);
+            synthesizer.process_midi_message(9, 0xB0, 0x62, note);
+            synthesizer.process_midi_message(9, 0xB0, 0x06, value);
+        };
+
+        let render = |nrpn: Option<(i32, i32)>| {
+            let settings = SynthesizerSettings::new(44100);
+            let mut synthesizer = Synthesizer::new(&drum_kit_soundfont(), &settings).unwrap();
+            if let Some((msb, value)) = nrpn {
+                send_drum_nrpn(&mut synthesizer, msb, 40, value);
+            }
+            synthesizer.note_on(9, 40, 100);
+            let mut left = vec![0_f32; 1024];
+            let mut right = vec![0_f32; 1024];
+            synthesizer.render(&mut left, &mut right);
+            (left, right)
+        };
+
+        let peak = |block: &[f32]| block.iter().fold(0_f32, |a, s| a.max(s.abs()));
+        let (plain_left, plain_right) = render(None);
+
+        // Level 64 of 127 scales the note.
+        let (level_left, _) = render(Some((0x1A, 64)));
+        let ratio = peak(&level_left) / peak(&plain_left);
+        assert!(
+            (ratio - 64.0 / 127.0).abs() < 1e-3,
+            "level ratio was {}",
+            ratio
+        );
+
+        // Pan 127 is hard right, so the left channel goes silent.
+        let (pan_left, pan_right) = render(Some((0x1C, 127)));
+        assert!(peak(&pan_left) < 1e-6);
+        assert!(peak(&pan_right) > peak(&plain_right));
+
+        // A pitch offset changes the waveform.
+        let (pitch_left, _) = render(Some((0x18, 66)));
+        assert_ne!(pitch_left, plain_left);
+    }
+
+    #[test]
     fn gs_master_volume_and_key_shift_use_sysex_fields() {
         let settings = SynthesizerSettings::new(44100);
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();

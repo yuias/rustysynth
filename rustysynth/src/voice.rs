@@ -74,6 +74,8 @@ pub(crate) struct Voice {
     dynamic_volume: bool,
 
     instrument_pan: f32,
+    // Pitch offset in semitones from the GS drum instrument NRPN, fixed for the note.
+    drum_pitch_coarse: f32,
     instrument_reverb: f32,
     instrument_chorus: f32,
 
@@ -133,6 +135,7 @@ impl Voice {
             mod_lfo_to_volume: 0_f32,
             dynamic_volume: false,
             instrument_pan: 0_f32,
+            drum_pitch_coarse: 0_f32,
             instrument_reverb: 0_f32,
             instrument_chorus: 0_f32,
             smoothed_cutoff: 0_f32,
@@ -181,6 +184,11 @@ impl Voice {
                 - sample_attenuation
                 - filter_attenuation;
             self.note_gain = SoundFontMath::decibels_to_linear(decibels);
+            // The GS drum instrument level scales the note rather than replacing the
+            // SoundFont attenuation, which the region still sets per instrument.
+            if let Some(level) = channel_info.get_drum_level(key) {
+                self.note_gain *= level;
+            }
         } else {
             self.note_gain = 0_f32;
         }
@@ -212,6 +220,19 @@ impl Voice {
         self.instrument_pan = SoundFontMath::clamp(region.get_pan(), -50_f32, 50_f32);
         self.instrument_reverb = 0.01_f32 * region.get_reverb_effects_send();
         self.instrument_chorus = 0.01_f32 * region.get_chorus_effects_send();
+
+        // The GS drum instrument parameters address one note of the kit, so they replace the
+        // region's own pan and sends rather than adding to them.
+        if let Some(pan) = channel_info.get_drum_pan(key) {
+            self.instrument_pan = pan;
+        }
+        if let Some(send) = channel_info.get_drum_reverb_send(key) {
+            self.instrument_reverb = send;
+        }
+        if let Some(send) = channel_info.get_drum_chorus_send(key) {
+            self.instrument_chorus = send;
+        }
+        self.drum_pitch_coarse = channel_info.get_drum_pitch_coarse(key);
 
         RegionEx::start_volume_envelope(&mut self.vol_env, region, channel_info, key, velocity);
         RegionEx::start_modulation_envelope(&mut self.mod_env, region, key, velocity);
@@ -313,8 +334,8 @@ impl Voice {
                 * self.modulators.default_scale(DefaultModulator::PitchWheelToFineTune);
         let scale_tuning = channel_info.get_scale_tuning_for_key(self.key);
         let master_tune = master_tune.for_channel(channel_info.get_is_percussion_channel());
-        let base_pitch = self.key as f32 + mod_env_pitch
-            + channel_pitch_change + master_tune + scale_tuning + modulator_tune;
+        let base_pitch = self.key as f32 + mod_env_pitch + channel_pitch_change + master_tune
+            + scale_tuning + modulator_tune + self.drum_pitch_coarse;
 
         let (portamento_start, portamento_end) = self.advance_portamento();
 

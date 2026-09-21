@@ -2,6 +2,10 @@
 
 use crate::system_mode::SystemMode;
 
+/// Marks a GS drum instrument parameter the file has not set, so that the value from the
+/// SoundFont is used instead. The parameters themselves only reach 127.
+const UNSET_DRUM_PARAMETER: u8 = 0xFF;
+
 #[derive(Debug, PartialEq, Eq)]
 enum DataType {
     None,
@@ -55,6 +59,15 @@ pub struct Channel {
     vibrato_rate: u8,  // NRPN MSB=1, LSB=8
     vibrato_depth: u8, // NRPN MSB=1, LSB=9
     vibrato_delay: u8, // NRPN MSB=1, LSB=10
+
+    // GS drum instrument NRPNs, indexed by note number and used only while the channel is a
+    // percussion channel. 0xFF marks a parameter the file never set, so the SoundFont value
+    // stands; the pitch offset is relative and needs no sentinel.
+    drum_pitch_coarse: [u8; 128], // NRPN MSB=0x18, 0x40 = no change
+    drum_level: [u8; 128],        // NRPN MSB=0x1A
+    drum_pan: [u8; 128],          // NRPN MSB=0x1C
+    drum_reverb_send: [u8; 128],  // NRPN MSB=0x1D
+    drum_chorus_send: [u8; 128],  // NRPN MSB=0x1E
 
     // Scale tuning: per-octave pitch offset in cents for each pitch class (C..B)
     // Default: all 0.0 (equal temperament)
@@ -122,6 +135,11 @@ impl Channel {
             poly_pressure: [0; 128],
             pitch_bend_raw: 8192,
             system_mode: SystemMode::Gm,
+            drum_pitch_coarse: [64; 128],
+            drum_level: [UNSET_DRUM_PARAMETER; 128],
+            drum_pan: [UNSET_DRUM_PARAMETER; 128],
+            drum_reverb_send: [UNSET_DRUM_PARAMETER; 128],
+            drum_chorus_send: [UNSET_DRUM_PARAMETER; 128],
         };
 
         channel.reset();
@@ -162,6 +180,11 @@ impl Channel {
         self.vibrato_rate = 64;
         self.vibrato_depth = 64;
         self.vibrato_delay = 64;
+        self.drum_pitch_coarse = [64; 128];
+        self.drum_level = [UNSET_DRUM_PARAMETER; 128];
+        self.drum_pan = [UNSET_DRUM_PARAMETER; 128];
+        self.drum_reverb_send = [UNSET_DRUM_PARAMETER; 128];
+        self.drum_chorus_send = [UNSET_DRUM_PARAMETER; 128];
         self.scale_tuning = [0.0; 12];
         self.channel_pressure = 0;
         self.portamento_on = false;
@@ -181,6 +204,59 @@ impl Channel {
 
     pub(crate) fn set_percussion_channel(&mut self, is_percussion: bool) {
         self.is_percussion_channel = is_percussion;
+    }
+
+    /// Pitch offset in semitones from the GS drum instrument NRPN, 0 when unset.
+    pub(crate) fn get_drum_pitch_coarse(&self, key: i32) -> f32 {
+        match self.drum_note(key) {
+            Some(note) => self.drum_pitch_coarse[note] as f32 - 64.0,
+            None => 0.0,
+        }
+    }
+
+    /// Level from the GS drum instrument NRPN as a gain, `None` when unset.
+    pub(crate) fn get_drum_level(&self, key: i32) -> Option<f32> {
+        self.drum_parameter(&self.drum_level, key)
+            .map(|value| value as f32 / 127.0)
+    }
+
+    /// Pan from the GS drum instrument NRPN in the same units as the pan generator
+    /// (-50 left to 50 right), `None` when unset.
+    ///
+    /// A value of 0 asks for a random pan, which would make a render depend on chance; it is
+    /// treated as centre instead.
+    pub(crate) fn get_drum_pan(&self, key: i32) -> Option<f32> {
+        self.drum_parameter(&self.drum_pan, key)
+            .map(|value| match value {
+                0 => 0.0,
+                _ => (value as f32 - 64.0) * (50.0 / 63.0),
+            })
+    }
+
+    /// Reverb send from the GS drum instrument NRPN, `None` when unset.
+    pub(crate) fn get_drum_reverb_send(&self, key: i32) -> Option<f32> {
+        self.drum_parameter(&self.drum_reverb_send, key)
+            .map(|value| value as f32 / 127.0)
+    }
+
+    /// Chorus send from the GS drum instrument NRPN, `None` when unset.
+    pub(crate) fn get_drum_chorus_send(&self, key: i32) -> Option<f32> {
+        self.drum_parameter(&self.drum_chorus_send, key)
+            .map(|value| value as f32 / 127.0)
+    }
+
+    /// The array index for a key, if the drum parameters apply to this channel at all.
+    fn drum_note(&self, key: i32) -> Option<usize> {
+        if !self.is_percussion_channel {
+            return None;
+        }
+        usize::try_from(key).ok().filter(|note| *note < 128)
+    }
+
+    fn drum_parameter(&self, values: &[u8; 128], key: i32) -> Option<u8> {
+        self.drum_note(key)
+            .map(|note| values[note])
+            .filter(|value| *value != UNSET_DRUM_PARAMETER)
     }
 
     pub(crate) fn set_system_mode(&mut self, mode: SystemMode) {
@@ -340,7 +416,43 @@ impl Channel {
     const NRPN_TVA_DECAY: i16 = (1 << 7) | 100;      // MSB=1, LSB=100
     const NRPN_TVA_RELEASE: i16 = (1 << 7) | 102;    // MSB=1, LSB=102
 
+    // NRPN MSB=0x18-0x1E: GS drum instrument parameters. The NRPN LSB is the note number
+    // rather than a parameter number, so these are matched on the MSB alone.
+    const NRPN_DRUM_PITCH_COARSE: i16 = 0x18;
+    const NRPN_DRUM_LEVEL: i16 = 0x1A;
+    const NRPN_DRUM_PAN: i16 = 0x1C;
+    const NRPN_DRUM_REVERB_SEND: i16 = 0x1D;
+    const NRPN_DRUM_CHORUS_SEND: i16 = 0x1E;
+
     fn nrpn_data_entry_coarse(&mut self, value: i32) {
+        if self.nrpn >= 0 {
+            let note = (self.nrpn & 0x7F) as usize;
+            let value = value.clamp(0, 127) as u8;
+            match self.nrpn >> 7 {
+                Self::NRPN_DRUM_PITCH_COARSE => {
+                    self.drum_pitch_coarse[note] = value;
+                    return;
+                }
+                Self::NRPN_DRUM_LEVEL => {
+                    self.drum_level[note] = value;
+                    return;
+                }
+                Self::NRPN_DRUM_PAN => {
+                    self.drum_pan[note] = value;
+                    return;
+                }
+                Self::NRPN_DRUM_REVERB_SEND => {
+                    self.drum_reverb_send[note] = value;
+                    return;
+                }
+                Self::NRPN_DRUM_CHORUS_SEND => {
+                    self.drum_chorus_send[note] = value;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match self.nrpn {
             Self::NRPN_VIBRATO_RATE => self.vibrato_rate = value as u8,
             Self::NRPN_VIBRATO_DEPTH => self.vibrato_depth = value as u8,
@@ -748,6 +860,64 @@ impl Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sends one GS drum instrument NRPN: MSB, then the note number as LSB, then data entry.
+    fn drum_nrpn(channel: &mut Channel, msb: i32, note: i32, value: i32) {
+        channel.set_nrpn_coarse(msb);
+        channel.set_nrpn_fine(note);
+        channel.data_entry_coarse(value);
+    }
+
+    #[test]
+    fn gs_drum_nrpns_are_stored_per_note() {
+        let mut channel = Channel::new(true);
+
+        drum_nrpn(&mut channel, 0x18, 38, 66); // pitch coarse, +2 semitones
+        drum_nrpn(&mut channel, 0x1A, 38, 64); // level
+        drum_nrpn(&mut channel, 0x1C, 38, 127); // pan, hard right
+        drum_nrpn(&mut channel, 0x1D, 38, 127); // reverb send
+        drum_nrpn(&mut channel, 0x1E, 38, 0); // chorus send
+
+        assert_eq!(channel.get_drum_pitch_coarse(38), 2.0);
+        assert_eq!(channel.get_drum_level(38), Some(64.0 / 127.0));
+        assert_eq!(channel.get_drum_pan(38), Some(50.0));
+        assert_eq!(channel.get_drum_reverb_send(38), Some(1.0));
+        assert_eq!(channel.get_drum_chorus_send(38), Some(0.0));
+
+        // Another note keeps the SoundFont values.
+        assert_eq!(channel.get_drum_pitch_coarse(36), 0.0);
+        assert_eq!(channel.get_drum_level(36), None);
+        assert_eq!(channel.get_drum_pan(36), None);
+
+        // A pan of 0 asks for a random position, which is taken as centre.
+        drum_nrpn(&mut channel, 0x1C, 40, 0);
+        assert_eq!(channel.get_drum_pan(40), Some(0.0));
+    }
+
+    #[test]
+    fn gs_drum_nrpns_apply_only_to_percussion_channels() {
+        let mut channel = Channel::new(false);
+        drum_nrpn(&mut channel, 0x1A, 38, 64);
+        assert_eq!(channel.get_drum_level(38), None);
+
+        // The value was stored all along and applies once the channel becomes percussion,
+        // the same way the bank number follows the flag.
+        channel.set_percussion_channel(true);
+        assert_eq!(channel.get_drum_level(38), Some(64.0 / 127.0));
+    }
+
+    #[test]
+    fn gs_drum_nrpns_survive_reset_all_controllers() {
+        let mut channel = Channel::new(true);
+        drum_nrpn(&mut channel, 0x1A, 38, 64);
+
+        // GS states that a value set by NRPN is not reset by Reset All Controllers.
+        channel.reset_all_controllers();
+        assert_eq!(channel.get_drum_level(38), Some(64.0 / 127.0));
+
+        channel.reset();
+        assert_eq!(channel.get_drum_level(38), None);
+    }
 
     #[test]
     fn percussion_flag_switch_applies_to_current_bank() {

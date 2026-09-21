@@ -22,6 +22,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
   - Universal Master Volume, Master Fine Tune and Master Coarse Tune.
   - GS Use for Rhythm Part (switches a part between melodic and drum banks).
   - GS Scale Tuning (all 12 notes of a part at once).
+  - GS drum instrument NRPNs, which address one note of a drum kit: pitch coarse, level, panpot, reverb send and chorus send. A panpot of 0 asks for a random position and is taken as centre. Like the other GS NRPNs, these survive Reset All Controllers.
   - GS Master Volume, Master Key Shift, Reverb Macro, Reverb Level and Chorus Macro (Chorus Level is not supported).
   - XG Part Mode (switches a MIDI channel between melodic and drum banks).
   - GS and XG messages are accepted for device IDs 10h-1Fh.
