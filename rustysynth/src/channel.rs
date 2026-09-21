@@ -34,6 +34,11 @@ pub struct Channel {
     nrpn: i16,
     pitch_bend_range: i16,
     coarse_tune: i16,
+    // GS Pitch Key Shift, a per-part transposition separate from the RPN coarse tune.
+    key_shift: i16,
+    // GS Keyboard Range: notes outside it are not sounded by this part.
+    keyboard_range_low: u8,
+    keyboard_range_high: u8,
     fine_tune: i16,
 
     pitch_bend: f32,
@@ -110,6 +115,9 @@ impl Channel {
             nrpn: -1,
             pitch_bend_range: 0,
             coarse_tune: 0,
+            key_shift: 0,
+            keyboard_range_low: 0,
+            keyboard_range_high: 127,
             fine_tune: 0,
             pitch_bend: 0_f32,
             last_data_type: DataType::None,
@@ -163,6 +171,9 @@ impl Channel {
         self.rpn = -1;
         self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
+        self.key_shift = 0;
+        self.keyboard_range_low = 0;
+        self.keyboard_range_high = 127;
         self.fine_tune = 8192;
 
         self.pitch_bend = 0_f32;
@@ -257,6 +268,26 @@ impl Channel {
         self.drum_note(key)
             .map(|note| values[note])
             .filter(|value| *value != UNSET_DRUM_PARAMETER)
+    }
+
+    /// GS Pitch Key Shift, in semitones.
+    pub(crate) fn set_key_shift(&mut self, semitones: i32) {
+        self.key_shift = semitones.clamp(-24, 24) as i16;
+    }
+
+    /// GS Keyboard Range. A low bound above the high bound silences the part, which is what
+    /// the parameter is for.
+    pub(crate) fn set_keyboard_range_low(&mut self, value: i32) {
+        self.keyboard_range_low = value.clamp(0, 127) as u8;
+    }
+
+    pub(crate) fn set_keyboard_range_high(&mut self, value: i32) {
+        self.keyboard_range_high = value.clamp(0, 127) as u8;
+    }
+
+    /// True when the part sounds this key at all.
+    pub(crate) fn is_key_in_range(&self, key: i32) -> bool {
+        key >= self.keyboard_range_low as i32 && key <= self.keyboard_range_high as i32
     }
 
     pub(crate) fn set_system_mode(&mut self, mode: SystemMode) {
@@ -595,7 +626,9 @@ impl Channel {
     }
 
     pub fn get_tune(&self) -> f32 {
-        self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
+        self.coarse_tune as f32
+            + self.key_shift as f32
+            + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
     }
 
     pub fn get_pitch_bend(&self) -> f32 {

@@ -264,6 +264,11 @@ impl Synthesizer {
             return;
         }
 
+        // GS Keyboard Range: the part ignores keys outside it.
+        if !self.channels[channel as usize].is_key_in_range(key) {
+            return;
+        }
+
         // Extract portamento info (&mut borrow, consumed before immutable borrow)
         let portamento_source: i32;
         let portamento_speed: f32;
@@ -823,6 +828,55 @@ impl Synthesizer {
                 }
             }
             return;
+        }
+
+        // Part parameters that a control change can also reach. The GS documentation gives
+        // each of these as equivalent to its controller, so they go through the same setters.
+        if addr_high == 0x40 && (addr_mid & 0xF0) == 0x10 {
+            if let Some(vv) = value {
+                let midi_channel = Synthesizer::gs_part_to_channel(addr_mid);
+                if midi_channel < self.channels.len() {
+                    let channel = &mut self.channels[midi_channel];
+                    match addr_low {
+                        // Pitch Key Shift: 28h-58h is -24 to +24 semitones.
+                        0x16 => {
+                            channel.set_key_shift(vv as i32 - 0x40);
+                            return;
+                        }
+                        // Part Level, the same parameter as Channel Volume.
+                        0x19 => {
+                            channel.set_volume_coarse(vv as i32);
+                            return;
+                        }
+                        // Part Panpot, the same parameter as Pan, except that 0 asks for a
+                        // random position; that would make a render depend on chance, so it
+                        // is taken as centre.
+                        0x1C => {
+                            channel.set_pan_coarse(if vv == 0 { 64 } else { vv as i32 });
+                            return;
+                        }
+                        0x1D => {
+                            channel.set_keyboard_range_low(vv as i32);
+                            return;
+                        }
+                        0x1E => {
+                            channel.set_keyboard_range_high(vv as i32);
+                            return;
+                        }
+                        // Chorus and Reverb Send Level, the same parameters as their
+                        // controllers.
+                        0x21 => {
+                            channel.set_chorus_send(vv as i32);
+                            return;
+                        }
+                        0x22 => {
+                            channel.set_reverb_send(vv as i32);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
 
         // Use for Rhythm Part: 40 1X 15 [0 = off, 1 = map 1, 2 = map 2] [checksum]
@@ -1704,6 +1758,77 @@ mod tests {
         // A pitch offset changes the waveform.
         let (pitch_left, _) = render(Some((0x18, 66)));
         assert_ne!(pitch_left, plain_left);
+    }
+
+    #[test]
+    fn gs_part_parameters_reach_the_same_state_as_their_controllers() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 2 is MIDI channel 1: 41 1n 42 12 40 1x nn vv.
+        let part = |synthesizer: &mut Synthesizer, nn: u8, vv: u8| {
+            synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x12, nn, vv]);
+        };
+
+        let mut reference = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        reference.process_midi_message(1, 0xB0, 0x07, 90); // Channel Volume
+        reference.process_midi_message(1, 0xB0, 0x0A, 100); // Pan
+        reference.process_midi_message(1, 0xB0, 0x5B, 70); // Reverb Send
+        reference.process_midi_message(1, 0xB0, 0x5D, 30); // Chorus Send
+
+        part(&mut synthesizer, 0x19, 90);
+        part(&mut synthesizer, 0x1C, 100);
+        part(&mut synthesizer, 0x22, 70);
+        part(&mut synthesizer, 0x21, 30);
+
+        assert_eq!(
+            synthesizer.channels[1].get_volume(),
+            reference.channels[1].get_volume()
+        );
+        assert_eq!(
+            synthesizer.channels[1].get_pan(),
+            reference.channels[1].get_pan()
+        );
+        assert_eq!(
+            synthesizer.channels[1].get_reverb_send(),
+            reference.channels[1].get_reverb_send()
+        );
+        assert_eq!(
+            synthesizer.channels[1].get_chorus_send(),
+            reference.channels[1].get_chorus_send()
+        );
+
+        // Pitch Key Shift is additive with the RPN coarse tune.
+        part(&mut synthesizer, 0x16, 0x40 + 3);
+        assert_eq!(synthesizer.channels[1].get_tune(), 3.0);
+
+        // A panpot of 0 asks for a random position and is taken as centre, which is the
+        // same state as the centre value of the controller.
+        part(&mut synthesizer, 0x1C, 0);
+        reference.process_midi_message(1, 0xB0, 0x0A, 64);
+        assert_eq!(
+            synthesizer.channels[1].get_pan(),
+            reference.channels[1].get_pan()
+        );
+    }
+
+    #[test]
+    fn gs_keyboard_range_silences_keys_outside_it() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 1 is MIDI channel 0: keyboard range 60-72.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x1D, 60]);
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x1E, 72]);
+
+        synthesizer.note_on(0, 59, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 0);
+
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 1);
+
+        synthesizer.note_on(0, 73, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 1);
     }
 
     #[test]
