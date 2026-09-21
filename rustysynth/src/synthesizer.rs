@@ -1538,6 +1538,64 @@ mod tests {
     }
 
     #[test]
+    fn velocity_to_cutoff_modulator_is_in_effect_from_the_first_block() {
+        use crate::test_util::SoundFontBuilder;
+        use std::io::Cursor;
+
+        // A modulator offset against a region that simply declares the resulting cutoff.
+        // Both must sound the same from the first sample: routing the offset through the
+        // per-block path would ramp the cutoff down over the first blocks instead of
+        // starting there. A linear 7-bit source maps velocity 127 to 127/128, so the
+        // offset is -9600 * 127/128 = -9525 from the 13500 default.
+        fn font(cutoff: i16, modulators: Vec<(u16, u16, i16, u16, u16)>) -> Arc<SoundFont> {
+            let mut builder = SoundFontBuilder::new();
+            let wave: Vec<i16> = (0..64)
+                .map(|i| ((i as f64 * std::f64::consts::TAU / 64.0).sin() * 12000.0) as i16)
+                .collect();
+            let sample = builder.sample("Sine", &wave, 44100, 60, 0, 64);
+            let instrument = builder.instrument_with_modulators(
+                "Filtered",
+                None,
+                vec![(
+                    vec![
+                        (GeneratorType::SAMPLE_MODES, 1),
+                        (GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY, cutoff),
+                    ],
+                    modulators,
+                    sample,
+                )],
+            );
+            builder.preset_with_modulators("Filtered", 0, 0, None, vec![(Vec::new(), Vec::new(), instrument)]);
+            let mut cursor = Cursor::new(builder.build());
+            Arc::new(SoundFont::new(&mut cursor).unwrap())
+        }
+
+        fn render(sound_font: &Arc<SoundFont>) -> Vec<f32> {
+            let settings = SynthesizerSettings::new(44100);
+            let mut synthesizer = Synthesizer::new(sound_font, &settings).unwrap();
+            synthesizer.note_on(0, 60, 127);
+            let mut left = vec![0_f32; 1024];
+            let mut right = vec![0_f32; 1024];
+            synthesizer.render(&mut left, &mut right);
+            left
+        }
+
+        let modulated = render(&font(
+            13500,
+            vec![(
+                0x0002,
+                GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY,
+                -9600,
+                0,
+                0,
+            )],
+        ));
+        let declared = render(&font(3975, Vec::new()));
+
+        assert_eq!(modulated, declared);
+    }
+
+    #[test]
     fn gs_master_volume_and_key_shift_use_sysex_fields() {
         let settings = SynthesizerSettings::new(44100);
         let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();

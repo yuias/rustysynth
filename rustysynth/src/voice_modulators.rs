@@ -52,6 +52,25 @@ pub(crate) fn is_realtime_destination(destination: u16) -> bool {
     )
 }
 
+/// True when a source cannot change for as long as the note sounds.
+fn is_note_on_source(source: ModulatorSource) -> bool {
+    matches!(
+        source.controller(),
+        Some(Controller::Velocity) | Some(Controller::Key) | Some(Controller::None) | None
+    )
+}
+
+/// True when the modulator has to be re-evaluated every block.
+///
+/// A realtime destination whose sources are all fixed at note-on is folded into the note-on
+/// offsets instead: routing it through the per-block path would ramp the filter cutoff up from
+/// the unmodulated value over the first blocks of the note, which is audible on a large offset.
+fn is_dynamic(modulator: &Modulator) -> bool {
+    is_realtime_destination(modulator.destination)
+        && !(is_note_on_source(ModulatorSource(modulator.source))
+            && is_note_on_source(ModulatorSource(modulator.amount_source)))
+}
+
 const fn default_modulator(source: u16, destination: u16, amount: i16, amount_source: u16) -> Modulator {
     Modulator {
         source,
@@ -147,10 +166,7 @@ impl VoiceModulators {
             *scale = amounts[k] / DEFAULT_MODULATORS[k].amount as f32;
         }
 
-        self.realtime_len = self.items[..self.len]
-            .iter()
-            .filter(|item| is_realtime_destination(item.destination))
-            .count();
+        self.realtime_len = self.items[..self.len].iter().filter(|item| is_dynamic(item)).count();
     }
 
     /// True when some modulator targets a destination that is applied on every block.
@@ -158,8 +174,8 @@ impl VoiceModulators {
         self.realtime_len > 0
     }
 
-    /// Overwrites `offsets` with the sum of the modulators whose destinations are realtime
-    /// (`realtime == true`) or note-on only (`realtime == false`).
+    /// Overwrites `offsets` with the sum of the modulators that are re-evaluated every block
+    /// (`realtime == true`) or fixed for the whole note (`realtime == false`).
     pub(crate) fn evaluate(
         &self,
         channel: &Channel,
@@ -170,7 +186,7 @@ impl VoiceModulators {
     ) {
         offsets.fill(0_f32);
         for (item, &amount) in self.items[..self.len].iter().zip(self.item_amounts.iter()) {
-            if is_realtime_destination(item.destination) != realtime {
+            if is_dynamic(item) != realtime {
                 continue;
             }
             let source = source_value(ModulatorSource(item.source), channel, key, velocity);
@@ -237,6 +253,36 @@ mod tests {
 
     fn modulator(source: u16, destination: u16, amount: i16, amount_source: u16) -> Modulator {
         default_modulator(source, destination, amount, amount_source)
+    }
+
+    #[test]
+    fn realtime_destinations_with_note_on_sources_are_evaluated_once() {
+        // Velocity (note-on only) -> filter cutoff (a realtime destination).
+        let velocity_to_cutoff =
+            modulator(0x0002, GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY, -3600, 0);
+        // CC#1 -> filter cutoff: the same destination, but the source can change mid-note.
+        let wheel_to_cutoff =
+            modulator(0x0081, GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY, -3600, 0);
+
+        assert!(!is_dynamic(&velocity_to_cutoff));
+        assert!(is_dynamic(&wheel_to_cutoff));
+
+        let mut modulators = VoiceModulators::new();
+        let channel = Channel::new(false);
+
+        modulators.start(&[velocity_to_cutoff], &[], true, true);
+        assert!(!modulators.has_realtime_items());
+
+        let mut note_on = [0_f32; GeneratorType::COUNT];
+        let mut realtime = [0_f32; GeneratorType::COUNT];
+        modulators.evaluate(&channel, 60, 127, false, &mut note_on);
+        modulators.evaluate(&channel, 60, 127, true, &mut realtime);
+        let cutoff = GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY as usize;
+        assert_ne!(note_on[cutoff], 0_f32);
+        assert_eq!(realtime[cutoff], 0_f32);
+
+        modulators.start(&[wheel_to_cutoff], &[], true, true);
+        assert!(modulators.has_realtime_items());
     }
 
     #[test]
