@@ -12,6 +12,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
   - Portamento Time (CC#5), Portamento On/Off (CC#65) and Portamento Control (CC#84).
   - Sostenuto (CC#66): sustains only the notes whose keys are held when the pedal goes down.
   - Soft Pedal (CC#67) and Variation Send (CC#94), stored and exposed without an audible effect yet.
+  - Mono Mode (CC#126) and Poly Mode (CC#127), and the GS Mono/Poly Mode part parameter that sets the same state. A part in mono mode releases the notes it is playing before starting a new one. Legato and portamento are not applied automatically in mono mode.
   - Filter Resonance (CC#71) and Brightness (CC#74), applied to sounding voices.
   - Release Time (CC#72), Attack Time (CC#73) and Decay Time (CC#75), applied at note-on.
   - Channel Pressure, applied as vibrato depth (SF2 default modulator).

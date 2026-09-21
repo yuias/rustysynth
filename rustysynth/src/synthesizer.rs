@@ -262,6 +262,16 @@ impl Synthesizer {
                     0x78 => self.note_off_all_channel(channel, true), // All Sound Off
                     0x79 => self.reset_all_controllers_channel(channel), // Reset All Controllers
                     0x7B => self.note_off_all_channel(channel, false), // All Note Off
+                    // Mono and Poly Mode. Both also stop the notes the channel is playing,
+                    // per the MIDI specification.
+                    0x7E => {
+                        channel_info.set_mono_mode(true);
+                        self.note_off_all_channel(channel, false);
+                    }
+                    0x7F => {
+                        channel_info.set_mono_mode(false);
+                        self.note_off_all_channel(channel, false);
+                    }
                     _ => (),
                 }
             }
@@ -310,6 +320,12 @@ impl Synthesizer {
         // GS Keyboard Range: the part ignores keys outside it.
         if !self.channels[channel as usize].is_key_in_range(key) {
             return;
+        }
+
+        // In mono mode the part sounds one note at a time, so the notes already playing are
+        // released before the new one starts.
+        if self.channels[channel as usize].get_is_mono_mode() {
+            self.note_off_all_channel(channel, false);
         }
 
         // Extract portamento info (&mut borrow, consumed before immutable borrow)
@@ -907,6 +923,12 @@ impl Synthesizer {
                     }
 
                     match addr_low {
+                        // Mono/Poly Mode, the same parameter as controllers 126 and 127.
+                        0x13 => {
+                            channel.set_mono_mode(vv == 0);
+                            self.note_off_all_channel(midi_channel as i32, false);
+                            return;
+                        }
                         // Pitch Key Shift: 28h-58h is -24 to +24 semitones.
                         0x16 => {
                             channel.set_key_shift(vv as i32 - 0x40);
@@ -1952,6 +1974,58 @@ mod tests {
         rx(&mut synthesizer, 0x03, 0);
         synthesizer.process_midi_message(0, 0xE0, 0, 100);
         assert_eq!(synthesizer.channels[0].get_pitch_bend(), 0.0);
+    }
+
+    #[test]
+    fn mono_mode_sounds_one_note_at_a_time() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let sounding = |synthesizer: &mut Synthesizer| {
+            synthesizer
+                .voices
+                .active_voices()
+                .iter()
+                .filter(|voice| voice.is_playing())
+                .count()
+        };
+
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 64, 100);
+        assert_eq!(sounding(&mut synthesizer), 2);
+
+        // Mono Mode (CC#126) stops the notes the channel is playing.
+        synthesizer.process_midi_message(0, 0xB0, 0x7E, 0);
+        assert_eq!(sounding(&mut synthesizer), 0);
+
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(sounding(&mut synthesizer), 1);
+        synthesizer.note_on(0, 64, 100);
+        assert_eq!(sounding(&mut synthesizer), 1);
+
+        // Another channel is unaffected.
+        synthesizer.note_on(1, 60, 100);
+        synthesizer.note_on(1, 64, 100);
+        assert_eq!(sounding(&mut synthesizer), 3);
+
+        // Poly Mode (CC#127) brings the channel back.
+        synthesizer.process_midi_message(0, 0xB0, 0x7F, 0);
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 64, 100);
+        assert_eq!(sounding(&mut synthesizer), 4);
+    }
+
+    #[test]
+    fn gs_mono_poly_mode_part_parameter_matches_the_controllers() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // Part 1 is MIDI channel 0: 40 11 13, 0 = mono, 1 = poly.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x13, 0x00]);
+        assert!(synthesizer.channels[0].get_is_mono_mode());
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x13, 0x01]);
+        assert!(!synthesizer.channels[0].get_is_mono_mode());
     }
 
     #[test]

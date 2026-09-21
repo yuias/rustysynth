@@ -530,6 +530,11 @@ impl Voice {
     }
 
     #[cfg(test)]
+    /// True until the note has been asked to release.
+    pub(crate) fn is_playing(&self) -> bool {
+        self.voice_state == VoiceState::Playing
+    }
+
     pub(crate) fn is_released(&self) -> bool {
         self.voice_state == VoiceState::Released
     }

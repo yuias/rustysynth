@@ -61,6 +61,9 @@ pub struct Channel {
     coarse_tune: i16,
     // GS Pitch Key Shift, a per-part transposition separate from the RPN coarse tune.
     key_shift: i16,
+    // Mono mode (CC126, or the GS Mono/Poly Mode part parameter): the part sounds one note
+    // at a time.
+    mono_mode: bool,
     // GS Patch Part receive switches, one bit per `Rx`. All on unless a GS message says
     // otherwise, so a file that sends none behaves as though the switches did not exist.
     rx_switches: u16,
@@ -144,6 +147,7 @@ impl Channel {
             pitch_bend_range: 0,
             coarse_tune: 0,
             key_shift: 0,
+            mono_mode: false,
             rx_switches: ALL_RX_SWITCHES,
             keyboard_range_low: 0,
             keyboard_range_high: 127,
@@ -201,6 +205,7 @@ impl Channel {
         self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
         self.key_shift = 0;
+        self.mono_mode = false;
         self.rx_switches = ALL_RX_SWITCHES;
         self.keyboard_range_low = 0;
         self.keyboard_range_high = 127;
@@ -303,6 +308,15 @@ impl Channel {
     /// GS Pitch Key Shift, in semitones.
     pub(crate) fn set_key_shift(&mut self, semitones: i32) {
         self.key_shift = semitones.clamp(-24, 24) as i16;
+    }
+
+    pub(crate) fn set_mono_mode(&mut self, mono: bool) {
+        self.mono_mode = mono;
+    }
+
+    /// True when the part sounds one note at a time.
+    pub fn get_is_mono_mode(&self) -> bool {
+        self.mono_mode
     }
 
     /// Sets one GS Patch Part receive switch.
