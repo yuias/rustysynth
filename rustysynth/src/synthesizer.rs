@@ -1034,7 +1034,7 @@ impl Effects {
 mod tests {
     use super::*;
     use crate::generator_type::GeneratorType;
-    use crate::test_util::{layered_soundfont, modulated_soundfont, sine_soundfont};
+    use crate::test_util::{drum_kit_soundfont, layered_soundfont, modulated_soundfont, sine_soundfont};
 
     fn render_block(synthesizer: &mut Synthesizer) {
         let mut left = vec![0_f32; synthesizer.get_block_size()];
@@ -1488,5 +1488,114 @@ mod tests {
         // Out-of-range macro 8 is ignored, so the previous parameters are unchanged.
         synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x08]);
         assert_reverb(&synthesizer, 0.50, 0.50, 1.00);
+    }
+
+    #[test]
+    fn xg_bank_lsb_selects_melodic_bank_only_in_xg_mode() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]); // XG System On
+        synthesizer.process_midi_message(0, 0xB0, 0, 0);
+        synthesizer.process_midi_message(0, 0xB0, 32, 5);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 5);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]); // GS Reset
+        synthesizer.process_midi_message(0, 0xB0, 0, 0);
+        synthesizer.process_midi_message(0, 0xB0, 32, 5);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 0);
+
+        synthesizer.process_sysex(&[0x7E, 0x7F, 0x09, 0x01]); // GM System On
+        synthesizer.process_midi_message(0, 0xB0, 0, 0);
+        synthesizer.process_midi_message(0, 0xB0, 32, 5);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 0);
+    }
+
+    #[test]
+    fn xg_drum_kit_note_on_uses_bank_128_with_patch() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&drum_kit_soundfont(), &settings).unwrap();
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]); // XG System On
+        synthesizer.process_midi_message(0, 0xB0, 0, 127);
+        synthesizer.process_midi_message(0, 0xC0, 5, 0);
+
+        // Key 60 falls in preset 128:5's range (60-127); a wrong bank (255 or 0:0's
+        // full-range preset) would start 0 or 2 voices instead of exactly 1.
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 1);
+
+        // Preset 128:5 has no region for key 40, so this note-on starts no new voice.
+        synthesizer.note_on(0, 40, 100);
+        assert_eq!(synthesizer.voices.active_voices().len(), 1);
+    }
+
+    #[test]
+    fn gs_chorus_macro_sets_effect_parameters() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let assert_chorus = |synthesizer: &Synthesizer, delay: f64, feedback: f32| {
+            let chorus = &synthesizer.effects.as_ref().unwrap().chorus;
+            assert!((chorus.get_delay() - delay).abs() < 1e-5);
+            assert!((chorus.get_feedback() - feedback).abs() < 1e-5);
+        };
+
+        // GS Chorus Macro 4 (Feedback Chorus): 40 01 38 04
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x04]);
+        assert_chorus(&synthesizer, 0.008, 0.5);
+
+        // GS Chorus Macro 5 (Flanger): 40 01 38 05
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x05]);
+        assert_chorus(&synthesizer, 0.002, 0.7);
+
+        // GS Chorus Macro 0 (Chorus 1): 40 01 38 00
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x00]);
+        assert_chorus(&synthesizer, 0.006, 0.0);
+
+        // GS Chorus Macro 7 (Short Delay FB): 40 01 38 07
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x07]);
+        assert_chorus(&synthesizer, 0.020, 0.5);
+
+        // GS Chorus Macro 6 (Short Delay): 40 01 38 06
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x06]);
+        assert_chorus(&synthesizer, 0.020, 0.0);
+
+        // Out-of-range macro 8 is ignored, so the previous parameters are unchanged.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x08]);
+        assert_chorus(&synthesizer, 0.020, 0.0);
+    }
+
+    #[test]
+    fn gs_reverb_level_scales_wet_level() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let get_wet =
+            |synthesizer: &Synthesizer| synthesizer.effects.as_ref().unwrap().reverb.get_wet();
+
+        // GS Reverb Level 64 (default): 40 01 33 40
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x33, 0x40]);
+        assert!((get_wet(&synthesizer) - Reverb::INITIAL_WET).abs() < 1e-5);
+
+        // GS Reverb Level 127: 40 01 33 7F
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x33, 0x7F]);
+        assert!((get_wet(&synthesizer) - 127.0 / 64.0 * Reverb::INITIAL_WET).abs() < 1e-5);
+
+        // GS Reverb Level 0: 40 01 33 00
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x33, 0x00]);
+        assert_eq!(get_wet(&synthesizer), 0.0);
+    }
+
+    #[test]
+    fn xg_system_on_restores_default_drum_channel() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+        synthesizer.set_percussion_channel(9, false);
+        synthesizer.set_percussion_channel(10, true);
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]); // XG System On
+        assert_eq!(synthesizer.channels[9].get_bank_number(), 128);
+        assert_eq!(synthesizer.channels[10].get_bank_number(), 0);
     }
 }

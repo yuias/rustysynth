@@ -604,6 +604,47 @@ pub(crate) fn modulated_soundfont(
     load(builder.build())
 }
 
+/// Builds a SoundFont with a melodic preset 0:0 covering all keys, a drum preset
+/// 128:0 covering keys 0-59 only and a drum preset 128:5 covering keys 60-127 only,
+/// so a note-on tells which drum preset was selected by whether a voice starts.
+pub(crate) fn drum_kit_soundfont() -> Arc<SoundFont> {
+    let mut builder = SoundFontBuilder::new();
+
+    let wave = sine_wave(64, 12000);
+    let sample = builder.sample("Sine", &wave, 44100, 60, 0, 64);
+
+    let melodic_instrument = builder.instrument(
+        "Melodic Instrument",
+        vec![(vec![(GeneratorType::SAMPLE_MODES, 1)], sample)],
+    );
+    let drum_instrument_low = builder.instrument(
+        "Drum Instrument 0-59",
+        vec![(
+            vec![
+                (GeneratorType::SAMPLE_MODES, 1),
+                (GeneratorType::KEY_RANGE, 59 << 8),
+            ],
+            sample,
+        )],
+    );
+    let drum_instrument_high = builder.instrument(
+        "Drum Instrument 60-127",
+        vec![(
+            vec![
+                (GeneratorType::SAMPLE_MODES, 1),
+                (GeneratorType::KEY_RANGE, 60 | (127 << 8)),
+            ],
+            sample,
+        )],
+    );
+
+    builder.preset("Melodic", 0, 0, vec![(Vec::new(), melodic_instrument)]);
+    builder.preset("Drum Kit 0", 128, 0, vec![(Vec::new(), drum_instrument_low)]);
+    builder.preset("Drum Kit 5", 128, 5, vec![(Vec::new(), drum_instrument_high)]);
+
+    load(builder.build())
+}
+
 fn load(bytes: Vec<u8>) -> Arc<SoundFont> {
     let mut cursor = Cursor::new(bytes);
     Arc::new(SoundFont::new(&mut cursor).expect("builder must produce a loadable SoundFont"))

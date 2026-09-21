@@ -8,7 +8,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 ## Added
 
 - MIDI control changes:
-  - Bank Select LSB (CC#32), stored and exposed; preset lookup still uses the MSB only.
+  - Bank Select LSB (CC#32), stored and exposed; used for preset lookup in XG mode.
   - Portamento Time (CC#5), Portamento On/Off (CC#65) and Portamento Control (CC#84).
   - Sostenuto (CC#66): sustains only the notes whose keys are held when the pedal goes down.
   - Soft Pedal (CC#67) and Variation Send (CC#94), stored and exposed without an audible effect yet.
@@ -22,6 +22,9 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
   - Universal Master Volume, Master Fine Tune and Master Coarse Tune.
   - GS Use for Rhythm Part (switches a part between melodic and drum banks).
   - GS Scale Tuning (all 12 notes of a part at once).
+  - GS Master Volume, Master Key Shift, Reverb Macro, Reverb Level and Chorus Macro (Chorus Level is not supported).
+  - XG Part Mode (switches a MIDI channel between melodic and drum banks).
+  - GS and XG messages are accepted for device IDs 10h-1Fh.
 - SysEx events in MIDI files are sent to the synthesizer during `MidiFileSequencer` playback. SysEx split across `F0`/`F7` packets is reassembled.
 - Master tuning: `Synthesizer::set_master_tune` / `get_master_tune`.
 - Per-channel scale tuning: `Synthesizer::set_scale_tuning` / `get_scale_tuning`.
@@ -33,6 +36,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 - SoundFont modulators (PMOD/IMOD). Instrument modulators override the SF2 default modulators and preset modulators add to them. Sources: note-on velocity and key, poly and channel pressure, pitch wheel and its sensitivity, and MIDI controllers. Modulators on pitch, filter, attenuation, pan and effect sends follow controller changes on sounding notes; modulators on envelope and LFO timing are applied at note-on. Linked modulators are not supported and are skipped.
 - `SynthesizerSettings::volume_attack_curve` (`VolumeAttackCurve::Linear` or `Cubic`), `SynthesizerSettings::enable_velocity_to_filter_cutoff` and `SynthesizerSettings::enable_soundfont_modulators`.
 - `SoundFont::get_warnings` lists instrument regions and modulators that were skipped while loading.
+- System mode (GM/GS/XG), selected by the last GM System On, GS Reset or XG System On message; `Synthesizer::reset` returns it to GM. In XG mode, Bank Select LSB selects the bank of melodic channels, and Bank Select MSB 127 or 126 switches the channel to the drum bank while any other MSB switches it back to melodic, overriding `set_percussion_channel` and the default drum channel. A channel switched to drums this way persists across `Synthesizer::reset`, exactly like one set through `set_percussion_channel` or GS Use for Rhythm Part; only a GM/GS/XG reset message or a later Bank Select MSB changes it back.
 
 ## Changed
 
@@ -47,6 +51,7 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 - Invalid instrument regions are skipped with a warning instead of rejecting the whole SoundFont. `SoundFontError::SanityCheckFailed` is no longer returned.
 - SoundFonts that define modulators sound as their authors specified. For example, GeneralUser GS disables the velocity to filter cutoff modulator on most instruments, and TimGM6mb disables modulation wheel vibrato on some. Set `enable_soundfont_modulators` to `false` for the previous behavior. Modulator amounts for reverb and chorus sends are relative to the SF2 default amount of 200, which corresponds to the existing send level.
 - GM/GS/XG reset messages restore channel 10 as the only drum channel. `Synthesizer::reset` keeps drum channels set with `set_percussion_channel`, and keeps the master volume and tuning set through the API.
+- Effect parameters set by GS reverb/chorus macros persist across `Synthesizer::reset`, like parameters set through the API.
 
 ## Fixed
 
