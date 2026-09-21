@@ -123,6 +123,7 @@ impl SoundFontParameters {
             &instrument_zones,
             &sample_headers,
             &mut drop_counts,
+            &mut warnings,
         )?;
 
         let preset_zones = Zone::create(

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use crate::error::SoundFontError;
 use crate::generator::Generator;
 use crate::generator_type::GeneratorType;
 use crate::loop_mode::LoopMode;
@@ -35,14 +34,17 @@ pub struct InstrumentRegion {
 }
 
 impl InstrumentRegion {
+    /// Returns `None` when the zone names a sample that does not exist, which drops just
+    /// this region instead of the whole SoundFont.
     fn new(
-        instrument_id: usize,
+        instrument_name: &str,
         global: &Zone,
         global_modulators: &[Modulator],
         local: &Zone,
         samples: &[SampleHeader],
         modulator_drop_counts: &mut ModulatorDropCounts,
-    ) -> Result<Self, SoundFontError> {
+        warnings: &mut Vec<String>,
+    ) -> Option<Self> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY as usize] = 13500;
         gs[GeneratorType::DELAY_MODULATION_LFO as usize] = -12000;
@@ -74,10 +76,13 @@ impl InstrumentRegion {
 
         let sample_id = gs[GeneratorType::SAMPLE_ID as usize] as usize;
         if sample_id >= samples.len() {
-            return Err(SoundFontError::InvalidSampleId {
-                instrument_id,
+            warnings.push(format!(
+                "instrument '{}': region removed (sample_id {} >= sample count {})",
+                instrument_name,
                 sample_id,
-            });
+                samples.len()
+            ));
+            return None;
         }
         let sample = &samples[sample_id];
 
@@ -88,7 +93,7 @@ impl InstrumentRegion {
         );
         let modulators = modulator::merge(global_modulators, local_modulators);
 
-        Ok(Self {
+        Some(Self {
             gs,
             modulators,
             sample_start: sample.start,
@@ -102,11 +107,12 @@ impl InstrumentRegion {
     }
 
     pub(crate) fn create(
-        instrument_id: usize,
+        instrument_name: &str,
         zones: &[Zone],
         samples: &[SampleHeader],
         modulator_drop_counts: &mut ModulatorDropCounts,
-    ) -> Result<Vec<InstrumentRegion>, SoundFontError> {
+        warnings: &mut Vec<String>,
+    ) -> Vec<InstrumentRegion> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
             || zones[0].generators.last().unwrap().generator_type != GeneratorType::SAMPLE_ID
@@ -125,33 +131,35 @@ impl InstrumentRegion {
             let count = zones.len() - 1;
             let mut regions: Vec<InstrumentRegion> = Vec::new();
             for i in 0..count {
-                regions.push(InstrumentRegion::new(
-                    instrument_id,
+                regions.extend(InstrumentRegion::new(
+                    instrument_name,
                     global,
                     &global_modulators,
                     &zones[i + 1],
                     samples,
                     modulator_drop_counts,
-                )?);
+                    warnings,
+                ));
             }
 
-            Ok(regions)
+            regions
         } else {
             // No global zone.
             let count = zones.len();
             let mut regions: Vec<InstrumentRegion> = Vec::new();
             for zone in zones.iter().take(count) {
-                regions.push(InstrumentRegion::new(
-                    instrument_id,
+                regions.extend(InstrumentRegion::new(
+                    instrument_name,
                     &Zone::empty(),
                     &[],
                     zone,
                     samples,
                     modulator_drop_counts,
-                )?);
+                    warnings,
+                ));
             }
 
-            Ok(regions)
+            regions
         }
     }
 

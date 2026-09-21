@@ -22,6 +22,7 @@ impl Instrument {
         zones: &[Zone],
         samples: &[SampleHeader],
         modulator_drop_counts: &mut ModulatorDropCounts,
+        warnings: &mut Vec<String>,
     ) -> Result<Self, SoundFontError> {
         let name = info.name.clone();
 
@@ -33,8 +34,13 @@ impl Instrument {
         let span_start = info.zone_start_index as usize;
         let span_end = span_start + zone_count as usize;
         let zone_span = &zones[span_start..span_end];
-        let regions =
-            InstrumentRegion::create(instrument_id, zone_span, samples, modulator_drop_counts)?;
+        let regions = InstrumentRegion::create(
+            &name,
+            zone_span,
+            samples,
+            modulator_drop_counts,
+            warnings,
+        );
 
         Ok(Self { name, regions })
     }
@@ -44,6 +50,7 @@ impl Instrument {
         zones: &[Zone],
         samples: &[SampleHeader],
         modulator_drop_counts: &mut ModulatorDropCounts,
+        warnings: &mut Vec<String>,
     ) -> Result<Vec<Instrument>, SoundFontError> {
         if infos.len() <= 1 {
             return Err(SoundFontError::InstrumentNotFound);
@@ -60,6 +67,7 @@ impl Instrument {
                 zones,
                 samples,
                 modulator_drop_counts,
+                warnings,
             )?);
         }
 

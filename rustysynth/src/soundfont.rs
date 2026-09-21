@@ -284,6 +284,34 @@ mod tests {
     }
 
     #[test]
+    fn region_naming_a_missing_sample_is_skipped_without_rejecting_the_file() {
+        use crate::test_util::SoundFontBuilder;
+        use std::io::Cursor;
+
+        let mut builder = SoundFontBuilder::new();
+        let wave: Vec<i16> = (0..64).map(|i| (i * 100) as i16).collect();
+        let sample = builder.sample("Sine", &wave, 44100, 60, 0, 63);
+        let instrument = builder.instrument(
+            "Broken",
+            vec![
+                (vec![(GeneratorType::SAMPLE_MODES, 0)], sample),
+                // No such sample: only this zone may be dropped.
+                (vec![(GeneratorType::SAMPLE_MODES, 0)], 99),
+            ],
+        );
+        builder.preset("Broken", 0, 0, vec![(Vec::new(), instrument)]);
+
+        let mut cursor = Cursor::new(builder.build());
+        let sound_font = SoundFont::new(&mut cursor).unwrap();
+
+        assert_eq!(sound_font.instruments[0].regions.len(), 1);
+        assert!(sound_font
+            .get_warnings()
+            .iter()
+            .any(|warning| warning.contains("sample_id 99")));
+    }
+
+    #[test]
     fn test_load_reject_sf3() {
         let path = samples_dir_path().join("dummy.sf3");
         let mut file = File::open(&path).unwrap();

@@ -66,6 +66,8 @@ pub enum SoundFontError {
     InvalidPreset(usize),
     PresetNotFound,
     InvalidInstrumentList,
+    /// No longer returned: a region naming a missing sample is skipped with a warning
+    /// instead of rejecting the SoundFont. Kept so that matching on it still compiles.
     InvalidSampleId {
         instrument_id: usize,
         sample_id: usize,
