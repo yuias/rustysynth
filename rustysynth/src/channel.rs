@@ -218,6 +218,11 @@ impl Channel {
 
     pub(crate) fn set_bank(&mut self, value: i32) {
         self.bank_number = value;
+        // XG selects drum kits by Bank MSB 127 (126 for SFX kits); GM/GS use the
+        // percussion flag directly, so leave it untouched there.
+        if self.system_mode == SystemMode::Xg {
+            self.is_percussion_channel = value == 0x7F || value == 0x7E;
+        }
     }
 
     pub(crate) fn set_patch(&mut self, value: i32) {
@@ -421,10 +426,20 @@ impl Channel {
     }
 
     // Public getters (normalized values)
+    /// Returns the bank number used for preset lookup.
+    ///
+    /// In GM and GS mode this is the Bank Select MSB, plus 128 on percussion channels.
+    /// In XG mode (after an XG System On message) melodic channels use the Bank Select
+    /// LSB and percussion channels return exactly 128, because XG selects drum kits with
+    /// MSB 127 (126 for SFX kits) and variation banks with the LSB.
     pub fn get_bank_number(&self) -> i32 {
-        // The drum offset is applied on read so that switching the percussion flag
-        // takes effect without waiting for the next bank select.
-        if self.is_percussion_channel {
+        if self.system_mode == SystemMode::Xg {
+            if self.is_percussion_channel {
+                128
+            } else {
+                self.bank_lsb
+            }
+        } else if self.is_percussion_channel {
             self.bank_number + 128
         } else {
             self.bank_number
@@ -796,5 +811,59 @@ mod tests {
         channel.set_bank(5);
         channel.reset();
         assert_eq!(channel.get_bank_number(), 128);
+    }
+
+    #[test]
+    fn xg_mode_uses_bank_lsb_for_melodic_channels() {
+        let mut channel = Channel::new(false);
+        channel.set_system_mode(SystemMode::Xg);
+        channel.set_bank(0);
+        channel.set_bank_lsb(5);
+        assert_eq!(channel.get_bank_number(), 5);
+
+        channel.set_bank_lsb(0);
+        assert_eq!(channel.get_bank_number(), 0);
+    }
+
+    #[test]
+    fn xg_mode_bank_msb_switches_percussion_flag() {
+        let mut channel = Channel::new(false);
+        channel.set_system_mode(SystemMode::Xg);
+        channel.set_patch(9);
+
+        channel.set_bank(127);
+        assert!(channel.get_is_percussion_channel());
+        assert_eq!(channel.get_bank_number(), 128);
+        assert_eq!(channel.get_patch_number(), 9);
+
+        channel.set_bank(126);
+        assert!(channel.get_is_percussion_channel());
+
+        channel.set_bank(0);
+        assert!(!channel.get_is_percussion_channel());
+        assert_eq!(channel.get_bank_number(), 0);
+
+        channel.set_bank(127);
+        channel.set_bank_lsb(3);
+        assert_eq!(channel.get_bank_number(), 128);
+    }
+
+    #[test]
+    fn gm_and_gs_modes_ignore_bank_lsb_and_drum_msb() {
+        for mode in [SystemMode::Gm, SystemMode::Gs] {
+            let mut channel = Channel::new(false);
+            channel.set_system_mode(mode);
+
+            channel.set_bank(0);
+            channel.set_bank_lsb(5);
+            assert_eq!(channel.get_bank_number(), 0);
+
+            channel.set_bank(127);
+            assert!(!channel.get_is_percussion_channel());
+            assert_eq!(channel.get_bank_number(), 127);
+
+            channel.set_percussion_channel(true);
+            assert_eq!(channel.get_bank_number(), 255);
+        }
     }
 }

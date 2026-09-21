@@ -611,6 +611,8 @@ impl Synthesizer {
     /// - GS Reset (41 1n 42 12 40 00 7F 00 41), device IDs 10h-1Fh → reset
     /// - GS Use for Rhythm Part (41 1n 42 12 40 1x 15 vv) and Scale Tuning (41 1n 42 12 40 1x 40 ...)
     /// - XG System On (43 1n 4C 00 00 7E 00), device IDs 10h-1Fh → reset
+    /// - XG Part Mode (43 1n 4C 08 pp 07 vv), device IDs 10h-1Fh → sets/clears the
+    ///   percussion flag of MIDI channel pp
     ///
     /// The data slice should NOT include the leading F0 or trailing F7.
     pub fn process_sysex(&mut self, data: &[u8]) {
@@ -663,19 +665,40 @@ impl Synthesizer {
             }
             // Yamaha XG
             0x43 => {
-                // 43 10 4C 00 00 7E 00 = XG System On
-                if data.len() >= 7
-                    && (data[1] & 0xF0) == 0x10
-                    && data[2] == 0x4C
-                    && data[3] == 0x00
-                    && data[4] == 0x00
-                    && data[5] == 0x7E
-                    && data[6] == 0x00
-                {
-                    self.reset_system(SystemMode::Xg);
+                // 43 1n 4C ... = XG parameter change
+                if data.len() >= 4 && (data[1] & 0xF0) == 0x10 && data[2] == 0x4C {
+                    self.process_xg_sysex(&data[3..]);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Processes an XG parameter change payload (after 43 1n 4C header).
+    fn process_xg_sysex(&mut self, addr_and_data: &[u8]) {
+        if addr_and_data.len() < 4 {
+            return;
+        }
+
+        let addr_high = addr_and_data[0];
+        let addr_mid = addr_and_data[1];
+        let addr_low = addr_and_data[2];
+        let value = addr_and_data[3];
+
+        // XG System On: 00 00 7E 00
+        if addr_high == 0x00 && addr_mid == 0x00 && addr_low == 0x7E {
+            if value == 0x00 {
+                self.reset_system(SystemMode::Xg);
+            }
+            return;
+        }
+
+        // Part Mode: 08 pp 07 vv (0 = normal, >=1 = drums). pp addresses the MIDI
+        // channel directly, unlike the GS part nibble.
+        if addr_high == 0x08 && addr_low == 0x07 {
+            if let Some(channel) = self.channels.get_mut(addr_mid as usize) {
+                channel.set_percussion_channel(value != 0);
+            }
         }
     }
 
@@ -1262,6 +1285,42 @@ mod tests {
         // Device ID 0x20 falls outside the accepted 10h-1Fh range, so the message is ignored.
         synthesizer.process_sysex(&[0x41, 0x20, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
         assert_eq!(synthesizer.system_mode, SystemMode::Xg);
+    }
+
+    #[test]
+    fn xg_bank_msb_127_selects_drum_bank_and_keeps_patch() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]);
+
+        synthesizer.process_midi_message(0, 0xB0, 0, 127);
+        synthesizer.process_midi_message(0, 0xC0, 5, 0);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 128);
+        assert_eq!(synthesizer.channels[0].get_patch_number(), 5);
+
+        synthesizer.process_midi_message(0, 0xB0, 0, 0);
+        assert_eq!(synthesizer.channels[0].get_bank_number(), 0);
+        assert!(!synthesizer.channels[0].get_is_percussion_channel());
+    }
+
+    #[test]
+    fn xg_part_mode_sysex_sets_and_clears_percussion() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        // No reset message is sent, so this also proves Part Mode works in GM mode.
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x08, 0x02, 0x07, 0x01]);
+        assert!(synthesizer.channels[2].get_is_percussion_channel());
+
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x08, 0x02, 0x07, 0x00]);
+        assert!(!synthesizer.channels[2].get_is_percussion_channel());
+
+        synthesizer.process_sysex(&[0x43, 0x1F, 0x4C, 0x08, 0x09, 0x07, 0x00]);
+        assert!(!synthesizer.channels[9].get_is_percussion_channel());
+
+        // Out-of-range part index is ignored without panicking.
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x08, 0x10, 0x07, 0x01]);
     }
 
     #[test]
