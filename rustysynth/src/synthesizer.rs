@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::array_math::ArrayMath;
-use crate::channel::{Channel, Rx};
+use crate::channel::{AssignMode, Channel, Rx};
 use crate::chorus::Chorus;
 use crate::error::SynthesizerError;
 use crate::master_tune::MasterTune;
@@ -328,6 +328,14 @@ impl Synthesizer {
         // released before the new one starts.
         if self.channels[channel as usize].get_is_mono_mode() {
             self.note_off_all_channel(channel, false);
+        } else if self.channels[channel as usize].assigns_one_voice_per_key() {
+            // GS Assign Mode Single: striking a note that still sounds stops the one
+            // already playing rather than layering another on top of it.
+            for voice in self.voices.get_active_voices().iter_mut() {
+                if voice.channel() == channel && voice.key() == key && voice.is_playing() {
+                    voice.end();
+                }
+            }
         }
 
         // Extract portamento info (&mut borrow, consumed before immutable borrow)
@@ -960,6 +968,17 @@ impl Synthesizer {
                     }
 
                     match addr_low {
+                        // Assign Mode: 0 single, 1 limited-multi, 2 full-multi.
+                        0x14 => {
+                            let mode = match vv {
+                                0 => AssignMode::Single,
+                                1 => AssignMode::LimitedMulti,
+                                2 => AssignMode::FullMulti,
+                                _ => return,
+                            };
+                            channel.set_assign_mode(mode);
+                            return;
+                        }
                         // Mono/Poly Mode, the same parameter as controllers 126 and 127.
                         0x13 => {
                             channel.set_mono_mode(vv == 0);
@@ -2189,6 +2208,52 @@ mod tests {
         // The portamento switch (CC#65) is never sent, so this fails if the glide still
         // depends on it.
         assert_ne!(render(true), render(false));
+    }
+
+    #[test]
+    fn gs_assign_mode_single_stops_a_note_struck_again() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let sounding = |synthesizer: &mut Synthesizer, key: i32| {
+            synthesizer
+                .voices
+                .active_voices()
+                .iter()
+                .filter(|voice| voice.key() == key && voice.is_playing())
+                .count()
+        };
+
+        // The default lets a repeated strike layer on top of the note already sounding.
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(sounding(&mut synthesizer, 60), 2);
+
+        // Part 1, Assign Mode = Single.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x14, 0x00]);
+        synthesizer.note_off_all(true);
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(sounding(&mut synthesizer, 60), 1);
+
+        // A different key is untouched.
+        synthesizer.note_on(0, 64, 100);
+        assert_eq!(sounding(&mut synthesizer, 60), 1);
+        assert_eq!(sounding(&mut synthesizer, 64), 1);
+
+        // Full-multi restores the layering.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x14, 0x02]);
+        synthesizer.note_off_all(true);
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(sounding(&mut synthesizer, 60), 2);
+
+        // An undefined mode number leaves the parameter as it was.
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x14, 0x03]);
+        synthesizer.note_off_all(true);
+        synthesizer.note_on(0, 60, 100);
+        synthesizer.note_on(0, 60, 100);
+        assert_eq!(sounding(&mut synthesizer, 60), 2);
     }
 
     #[test]

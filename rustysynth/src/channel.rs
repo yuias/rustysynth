@@ -2,6 +2,18 @@
 
 use crate::system_mode::SystemMode;
 
+/// GS Assign Mode: how a part handles a note struck again while it still sounds.
+///
+/// The documentation names the three modes but only defines how many voices the first two
+/// leave sounding; it does not say where `LimitedMulti` draws its limit, so that mode and
+/// `FullMulti` both let repeats layer here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssignMode {
+    Single,
+    LimitedMulti,
+    FullMulti,
+}
+
 /// A GS Patch Part receive switch, as the bit it occupies in `Channel::rx_switches`. The
 /// order follows the GS parameter addresses 03h to 12h.
 #[derive(Clone, Copy)]
@@ -65,6 +77,9 @@ pub struct Channel {
     coarse_tune: i16,
     // GS Pitch Key Shift, a per-part transposition separate from the RPN coarse tune.
     key_shift: i16,
+    // GS Assign Mode. LimitedMulti is the documented default and matches the behavior the
+    // part had before the parameter existed.
+    assign_mode: AssignMode,
     // Mono mode (CC126, or the GS Mono/Poly Mode part parameter): the part sounds one note
     // at a time.
     mono_mode: bool,
@@ -155,6 +170,7 @@ impl Channel {
             pitch_bend_range: 0,
             coarse_tune: 0,
             key_shift: 0,
+            assign_mode: AssignMode::LimitedMulti,
             mono_mode: false,
             rx_switches: ALL_RX_SWITCHES,
             pitch_offset_hz: 0_f32,
@@ -214,6 +230,7 @@ impl Channel {
         self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
         self.key_shift = 0;
+        self.assign_mode = AssignMode::LimitedMulti;
         self.mono_mode = false;
         self.rx_switches = ALL_RX_SWITCHES;
         self.pitch_offset_hz = 0_f32;
@@ -318,6 +335,15 @@ impl Channel {
     /// GS Pitch Key Shift, in semitones.
     pub(crate) fn set_key_shift(&mut self, semitones: i32) {
         self.key_shift = semitones.clamp(-24, 24) as i16;
+    }
+
+    pub(crate) fn set_assign_mode(&mut self, mode: AssignMode) {
+        self.assign_mode = mode;
+    }
+
+    /// True when striking a note that still sounds stops the note already playing.
+    pub(crate) fn assigns_one_voice_per_key(&self) -> bool {
+        self.assign_mode == AssignMode::Single
     }
 
     pub(crate) fn set_mono_mode(&mut self, mono: bool) {
