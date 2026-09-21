@@ -99,7 +99,11 @@ impl SoundFont {
                     ));
                     return false;
                 }
-                if start_loop < 0 {
+                // A region that never loops is played from sample_start to sample_end only, so
+                // its loop points are never read and must not disqualify it.
+                let loops = loop_mode != LoopMode::NoLoop;
+
+                if loops && start_loop < 0 {
                     warnings.push(format!(
                         "instrument '{}': region removed (sample_start_loop {} < 0)",
                         inst_name, start_loop
@@ -113,7 +117,7 @@ impl SoundFont {
                     ));
                     return false;
                 }
-                if end_loop as usize >= wave_len {
+                if loops && end_loop as usize >= wave_len {
                     warnings.push(format!(
                         "instrument '{}': region removed (sample_end_loop {} >= wave_data len {})",
                         inst_name, end_loop, wave_len
@@ -127,14 +131,14 @@ impl SoundFont {
                     ));
                     return false;
                 }
-                if end_loop < start_loop {
+                if loops && end_loop < start_loop {
                     warnings.push(format!(
                         "instrument '{}': region removed (end_loop {} < start_loop {})",
                         inst_name, end_loop, start_loop
                     ));
                     return false;
                 }
-                if loop_mode != LoopMode::NoLoop && start_loop >= end_loop {
+                if loops && start_loop >= end_loop {
                     warnings.push(format!(
                         "instrument '{}': region removed (loop mode active but start_loop {} >= end_loop {})",
                         inst_name, start_loop, end_loop
@@ -231,6 +235,52 @@ mod tests {
         assert_eq!(instruments[0].regions.len(), 1);
         assert_eq!(instruments[0].regions[0].get_sample_end(), 99);
         assert_eq!(warnings.len(), 2);
+    }
+
+    /// Same as `region`, but with explicit loop points and loop mode.
+    fn looped_region(
+        start: i32,
+        end: i32,
+        start_loop: i32,
+        end_loop: i32,
+        loop_mode: i16,
+    ) -> InstrumentRegion {
+        let mut region = region(start, end);
+        region.gs[GeneratorType::SAMPLE_MODES as usize] = loop_mode;
+        region.sample_start_loop = start_loop;
+        region.sample_end_loop = end_loop;
+        region
+    }
+
+    #[test]
+    fn sanitize_keeps_non_looping_regions_with_unusable_loop_points() {
+        const NO_LOOP: i16 = 0;
+        const CONTINUOUS: i16 = 1;
+
+        let mut instruments = vec![Instrument {
+            name: "test".to_string(),
+            regions: vec![
+                looped_region(0, 99, -1, 50, NO_LOOP),
+                looped_region(0, 99, 10, 200, NO_LOOP),
+                looped_region(0, 99, 60, 50, NO_LOOP),
+            ],
+        }];
+        let warnings = SoundFont::sanitize(&mut instruments, 100);
+        assert_eq!(instruments[0].regions.len(), 3);
+        assert!(warnings.is_empty());
+
+        // The same loop points disqualify a region that does loop.
+        let mut instruments = vec![Instrument {
+            name: "test".to_string(),
+            regions: vec![
+                looped_region(0, 99, -1, 50, CONTINUOUS),
+                looped_region(0, 99, 10, 200, CONTINUOUS),
+                looped_region(0, 99, 60, 50, CONTINUOUS),
+            ],
+        }];
+        let warnings = SoundFont::sanitize(&mut instruments, 100);
+        assert!(instruments[0].regions.is_empty());
+        assert_eq!(warnings.len(), 4); // three regions, plus "all regions removed"
     }
 
     #[test]
