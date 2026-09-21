@@ -59,6 +59,12 @@ enum ModulatorDropReason {
     ReservedSource,
     PrimarySourceNone,
     Linked,
+    /// The amount source is a link, which the specification never allows.
+    LinkedAmountSource,
+    /// A link destination naming a modulator index the zone does not have.
+    DanglingLink,
+    /// A link source that no modulator in the zone feeds.
+    UnfedLinkSource,
     BannedCc,
     InvalidTransform,
     InvalidDestination,
@@ -156,11 +162,28 @@ impl Modulator {
             && self.transform == other.transform
     }
 
+    /// True when the destination names another modulator in the same zone rather than a
+    /// generator. The remaining 15 bits are that modulator's index, counted from the first
+    /// modulator of the zone.
+    fn is_link_destination(&self) -> bool {
+        self.destination & 0x8000 != 0
+    }
+
+    fn link_target(&self) -> usize {
+        (self.destination & 0x7FFF) as usize
+    }
+
+    fn has_link_source(&self) -> bool {
+        matches!(classify_source(self.source), SourceClass::Linked)
+    }
+
     /// Checks whether the modulator is usable at all, per SF2.04 8.2.1 (source
     /// operator encoding) and 8.2.9/8.2.10 (transform, destination).
     fn validate(&self, level: ModulatorLevel) -> Result<(), ModulatorDropReason> {
         match classify_source(self.source) {
             SourceClass::None => return Err(ModulatorDropReason::PrimarySourceNone),
+            // A link source is only meaningful with the rest of the zone in view, so
+            // `validate_zone` decides its fate before calling this.
             SourceClass::Linked => return Err(ModulatorDropReason::Linked),
             SourceClass::Reserved => return Err(ModulatorDropReason::ReservedSource),
             SourceClass::BannedCc => return Err(ModulatorDropReason::BannedCc),
@@ -170,7 +193,7 @@ impl Modulator {
         // Unlike the primary source, "None" is a legitimate amount source
         // (a fixed amount with no controller scaling it).
         match classify_source(self.amount_source) {
-            SourceClass::Linked => return Err(ModulatorDropReason::Linked),
+            SourceClass::Linked => return Err(ModulatorDropReason::LinkedAmountSource),
             SourceClass::Reserved => return Err(ModulatorDropReason::ReservedSource),
             SourceClass::BannedCc => return Err(ModulatorDropReason::BannedCc),
             SourceClass::None | SourceClass::Valid => {}
@@ -180,7 +203,7 @@ impl Modulator {
             return Err(ModulatorDropReason::InvalidTransform);
         }
 
-        if self.destination & 0x8000 != 0 {
+        if self.is_link_destination() {
             return Err(ModulatorDropReason::Linked);
         }
         let is_out_of_range = self.destination as usize >= GeneratorType::COUNT;
@@ -205,8 +228,27 @@ pub(crate) fn validate_zone(
     level: ModulatorLevel,
     counts: &mut ModulatorDropCounts,
 ) -> Vec<Modulator> {
-    let mut result: Vec<Modulator> = Vec::new();
+    // Link indices are relative to the first modulator of the zone, so whether a link is
+    // usable can only be decided here. Chains are not evaluated, but the reason a linked
+    // modulator was dropped is worth telling apart: a dangling or unfed link is invalid by
+    // the specification, while a well-formed chain is this synthesizer's own limitation.
+    let mut is_link_target = vec![false; zone_modulators.len()];
     for modulator in zone_modulators {
+        if modulator.is_link_destination() && modulator.link_target() < zone_modulators.len() {
+            is_link_target[modulator.link_target()] = true;
+        }
+    }
+
+    let mut result: Vec<Modulator> = Vec::new();
+    for (index, modulator) in zone_modulators.iter().enumerate() {
+        if modulator.is_link_destination() && modulator.link_target() >= zone_modulators.len() {
+            counts.record(ModulatorDropReason::DanglingLink);
+            continue;
+        }
+        if modulator.has_link_source() && !is_link_target[index] {
+            counts.record(ModulatorDropReason::UnfedLinkSource);
+            continue;
+        }
         match modulator.validate(level) {
             Ok(()) => {
                 if let Some(existing) = result.iter_mut().find(|m| m.same_identity(modulator)) {
@@ -241,6 +283,9 @@ pub(crate) struct ModulatorDropCounts {
     reserved_source: usize,
     primary_source_none: usize,
     linked: usize,
+    linked_amount_source: usize,
+    dangling_link: usize,
+    unfed_link_source: usize,
     banned_cc: usize,
     invalid_transform: usize,
     invalid_destination: usize,
@@ -252,6 +297,9 @@ impl ModulatorDropCounts {
             ModulatorDropReason::ReservedSource => self.reserved_source += 1,
             ModulatorDropReason::PrimarySourceNone => self.primary_source_none += 1,
             ModulatorDropReason::Linked => self.linked += 1,
+            ModulatorDropReason::LinkedAmountSource => self.linked_amount_source += 1,
+            ModulatorDropReason::DanglingLink => self.dangling_link += 1,
+            ModulatorDropReason::UnfedLinkSource => self.unfed_link_source += 1,
             ModulatorDropReason::BannedCc => self.banned_cc += 1,
             ModulatorDropReason::InvalidTransform => self.invalid_transform += 1,
             ModulatorDropReason::InvalidDestination => self.invalid_destination += 1,
@@ -277,8 +325,26 @@ impl ModulatorDropCounts {
         }
         if self.linked > 0 {
             messages.push(format!(
-                "{} modulator(s) dropped: linked modulators are not supported",
+                "{} modulator(s) dropped: modulator chains are not supported",
                 self.linked
+            ));
+        }
+        if self.linked_amount_source > 0 {
+            messages.push(format!(
+                "{} modulator(s) dropped: the amount source cannot be a link",
+                self.linked_amount_source
+            ));
+        }
+        if self.dangling_link > 0 {
+            messages.push(format!(
+                "{} modulator(s) dropped: the link points past the end of the zone",
+                self.dangling_link
+            ));
+        }
+        if self.unfed_link_source > 0 {
+            messages.push(format!(
+                "{} modulator(s) dropped: the link source has no modulator feeding it",
+                self.unfed_link_source
             ));
         }
         if self.banned_cc > 0 {
@@ -359,6 +425,54 @@ mod tests {
     fn amount_source_none_is_allowed() {
         let m = modulator(0x0002, GeneratorType::PAN, 100, 0, 0);
         assert!(m.validate(ModulatorLevel::Instrument).is_ok());
+    }
+
+    #[test]
+    fn zone_validation_tells_the_link_failures_apart() {
+        const LINK_SOURCE: u16 = 127;
+
+        // A well-formed pair: modulator 0 feeds modulator 1, which drives a generator.
+        // Both are dropped, but only because chains are unsupported.
+        let chain = [
+            modulator(0x0081, 0x8000 | 1, 100, 0, 0),
+            modulator(LINK_SOURCE, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0),
+        ];
+        let mut counts = ModulatorDropCounts::default();
+        assert!(validate_zone(&chain, ModulatorLevel::Instrument, &mut counts).is_empty());
+        assert_eq!(counts.linked, 2);
+        assert_eq!(counts.dangling_link, 0);
+        assert_eq!(counts.unfed_link_source, 0);
+
+        // A link naming a modulator the zone does not have.
+        let dangling = [modulator(0x0081, 0x8000 | 7, 100, 0, 0)];
+        let mut counts = ModulatorDropCounts::default();
+        assert!(validate_zone(&dangling, ModulatorLevel::Instrument, &mut counts).is_empty());
+        assert_eq!(counts.dangling_link, 1);
+        assert_eq!(counts.linked, 0);
+
+        // A link source with nothing feeding it.
+        let unfed = [
+            modulator(LINK_SOURCE, GeneratorType::VIBRATO_LFO_TO_PITCH, 50, 0, 0),
+            valid_modulator(50),
+        ];
+        let mut counts = ModulatorDropCounts::default();
+        let kept = validate_zone(&unfed, ModulatorLevel::Instrument, &mut counts);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(counts.unfed_link_source, 1);
+        assert_eq!(counts.linked, 0);
+
+        // A link used as the amount source is never legal.
+        let amount_link = [modulator(
+            0x0081,
+            GeneratorType::VIBRATO_LFO_TO_PITCH,
+            50,
+            LINK_SOURCE,
+            0,
+        )];
+        let mut counts = ModulatorDropCounts::default();
+        assert!(validate_zone(&amount_link, ModulatorLevel::Instrument, &mut counts).is_empty());
+        assert_eq!(counts.linked_amount_source, 1);
+        assert_eq!(counts.linked, 0);
     }
 
     #[test]
