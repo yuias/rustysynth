@@ -62,14 +62,20 @@ pub(crate) struct RegionPair<'a> {
     pub(crate) preset: &'a PresetRegion,
     pub(crate) instrument: &'a InstrumentRegion,
     offsets: Option<&'a GeneratorOffsets>,
+    clamp_to_range: bool,
 }
 
 impl<'a> RegionPair<'a> {
-    pub(crate) fn new(preset: &'a PresetRegion, instrument: &'a InstrumentRegion) -> Self {
+    pub(crate) fn new(
+        preset: &'a PresetRegion,
+        instrument: &'a InstrumentRegion,
+        clamp_to_range: bool,
+    ) -> Self {
         Self {
             preset,
             instrument,
             offsets: None,
+            clamp_to_range,
         }
     }
 
@@ -79,6 +85,7 @@ impl<'a> RegionPair<'a> {
             preset: self.preset,
             instrument: self.instrument,
             offsets: Some(offsets),
+            clamp_to_range: self.clamp_to_range,
         }
     }
 
@@ -88,7 +95,7 @@ impl<'a> RegionPair<'a> {
             Some(offsets) => value + offsets[i].round() as i32,
             None => value,
         };
-        match generator_range(i) {
+        match generator_range(i).filter(|_| self.clamp_to_range) {
             Some((low, high)) => value.clamp(low, high),
             None => value,
         }

@@ -57,6 +57,7 @@ pub struct Synthesizer {
     system_mode: SystemMode,
 
     enable_master_coarse_tune_on_percussion: bool,
+    enable_generator_range_clamp: bool,
 }
 
 /// GS Reverb Macro (room_size, damp, width), applied with `set_reverb_room_size`,
@@ -159,6 +160,7 @@ impl Synthesizer {
             system_mode: SystemMode::Gm,
             enable_master_coarse_tune_on_percussion: settings
                 .enable_master_coarse_tune_on_percussion,
+            enable_generator_range_clamp: settings.enable_generator_range_clamp,
         })
     }
 
@@ -302,7 +304,11 @@ impl Synthesizer {
                 let instrument = &self.sound_font.instruments[preset_region.instrument];
                 for instrument_region in instrument.regions.iter() {
                     if instrument_region.contains(key, velocity) {
-                        let region_pair = RegionPair::new(preset_region, instrument_region);
+                        let region_pair = RegionPair::new(
+                            preset_region,
+                            instrument_region,
+                            self.enable_generator_range_clamp,
+                        );
 
                         if let Some(value) = self.voices.request_new(instrument_region, channel, key) {
                             value.start(&region_pair, channel_info, channel, key, velocity,
@@ -1622,6 +1628,38 @@ mod tests {
         };
 
         assert_eq!(render(&modulated), render(&plain));
+    }
+
+    #[test]
+    fn generator_range_clamp_setting_restores_the_unclamped_behavior() {
+        // +9600 cents on top of the 13500 default puts the cutoff past the 13500 maximum.
+        let modulated = modulated_soundfont(
+            vec![(
+                0x0002,
+                GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY,
+                9600,
+                0,
+                0,
+            )],
+            Vec::new(),
+        );
+        let plain = modulated_soundfont(Vec::new(), Vec::new());
+
+        let render = |sound_font: &Arc<SoundFont>, clamp: bool| {
+            let mut settings = SynthesizerSettings::new(44100);
+            settings.enable_generator_range_clamp = clamp;
+            let mut synthesizer = Synthesizer::new(sound_font, &settings).unwrap();
+            synthesizer.note_on(0, 60, 127);
+            let mut left = vec![0_f32; 512];
+            let mut right = vec![0_f32; 512];
+            synthesizer.render(&mut left, &mut right);
+            left
+        };
+
+        // Clamped, the modulated region sounds like the unmodulated one.
+        assert_eq!(render(&modulated, true), render(&plain, true));
+        // Unclamped, the cutoff runs past the maximum and the region sounds different.
+        assert_ne!(render(&modulated, false), render(&plain, false));
     }
 
     #[test]

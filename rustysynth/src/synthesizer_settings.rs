@@ -32,6 +32,15 @@ pub struct SynthesizerSettings {
     /// reached every channel. Master Fine Tune and `Synthesizer::set_master_tune` are
     /// unaffected and always reach every channel.
     pub enable_master_coarse_tune_on_percussion: bool,
+    /// The value indicating whether generator values are clamped to the useful range the
+    /// SoundFont specification gives them, including when the range is left only after the
+    /// preset, instrument and note-on modulator values are summed.
+    ///
+    /// Disabling this is **not** conforming: the specification asks for the nearest
+    /// realizable value, and a SoundFont that sums out of range is asking for something the
+    /// synthesizer cannot produce, such as a region louder than its own sample. It exists
+    /// only to restore the previous behavior for a SoundFont that relied on it.
+    pub enable_generator_range_clamp: bool,
 }
 
 impl SynthesizerSettings {
@@ -42,6 +51,7 @@ impl SynthesizerSettings {
     const DEFAULT_ENABLE_VELOCITY_TO_FILTER_CUTOFF: bool = true;
     const DEFAULT_ENABLE_SOUNDFONT_MODULATORS: bool = true;
     const DEFAULT_ENABLE_MASTER_COARSE_TUNE_ON_PERCUSSION: bool = false;
+    const DEFAULT_ENABLE_GENERATOR_RANGE_CLAMP: bool = true;
 
     /// Initializes a new instance of synthesizer settings.
     ///
@@ -60,6 +70,8 @@ impl SynthesizerSettings {
             enable_soundfont_modulators: SynthesizerSettings::DEFAULT_ENABLE_SOUNDFONT_MODULATORS,
             enable_master_coarse_tune_on_percussion:
                 SynthesizerSettings::DEFAULT_ENABLE_MASTER_COARSE_TUNE_ON_PERCUSSION,
+            enable_generator_range_clamp:
+                SynthesizerSettings::DEFAULT_ENABLE_GENERATOR_RANGE_CLAMP,
         }
     }
 
