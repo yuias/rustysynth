@@ -57,3 +57,5 @@ The upstream history is kept unchanged in `CHANGELOG.md`.
 
 - A panic when the pitch ratio exceeded the length of a very short sample loop.
 - MIDI files with SMPTE time division were read as ticks per beat and played at the wrong speed.
+- Running status was not cancelled by meta events, so bytes following one were read as a message with a meta status byte.
+- MIDI files declaring a time division of zero made every event time infinite or NaN. The header is now rejected as invalid.
