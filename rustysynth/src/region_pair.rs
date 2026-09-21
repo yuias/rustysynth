@@ -7,21 +7,52 @@ use crate::preset_region::PresetRegion;
 use crate::soundfont_math::SoundFontMath;
 use crate::voice_modulators::GeneratorOffsets;
 
-/// The value range SF2.04 defines for a generator, or `None` when this file does not
-/// restrict it.
+/// The useful value range the SoundFont specification gives a generator in its generator
+/// summary, or `None` for the generators it leaves unbounded or describes with flags and
+/// sentinel values.
 ///
-/// The sum of the preset and instrument values plus any modulator offset can leave the
-/// range the spec defines, where the resulting behavior is undefined; clamping keeps a
-/// malformed or heavily modulated region inside what the synthesis code expects. Only the
-/// ranges that the engine depends on are listed.
+/// The sum of the preset and instrument values, plus any modulator offset fixed at note-on,
+/// can leave that range. The specification calls for substituting the nearest realizable
+/// value rather than using the sum as it stands.
+///
+/// Coarse and fine tune are deliberately absent: the pitch of a sounding note is offset
+/// outside the region, so clamping here would not bound it anyway, and the pitch wheel
+/// needs far more than the 99 cents the fine tune generator allows.
 fn generator_range(generator: usize) -> Option<(i32, i32)> {
     match generator as u16 {
+        GeneratorType::MODULATION_LFO_TO_PITCH => Some((-12000, 12000)),
+        GeneratorType::VIBRATO_LFO_TO_PITCH => Some((-12000, 12000)),
+        GeneratorType::MODULATION_ENVELOPE_TO_PITCH => Some((-12000, 12000)),
         GeneratorType::INITIAL_FILTER_CUTOFF_FREQUENCY => Some((1500, 13500)),
         GeneratorType::INITIAL_FILTER_Q => Some((0, 960)),
+        GeneratorType::MODULATION_LFO_TO_FILTER_CUTOFF_FREQUENCY => Some((-12000, 12000)),
+        GeneratorType::MODULATION_ENVELOPE_TO_FILTER_CUTOFF_FREQUENCY => Some((-12000, 12000)),
+        GeneratorType::MODULATION_LFO_TO_VOLUME => Some((-960, 960)),
         GeneratorType::CHORUS_EFFECTS_SEND => Some((0, 1000)),
         GeneratorType::REVERB_EFFECTS_SEND => Some((0, 1000)),
         GeneratorType::PAN => Some((-500, 500)),
+        GeneratorType::DELAY_MODULATION_LFO => Some((-12000, 5000)),
+        GeneratorType::FREQUENCY_MODULATION_LFO => Some((-16000, 4500)),
+        GeneratorType::DELAY_VIBRATO_LFO => Some((-12000, 5000)),
+        GeneratorType::FREQUENCY_VIBRATO_LFO => Some((-16000, 4500)),
+        GeneratorType::DELAY_MODULATION_ENVELOPE => Some((-12000, 5000)),
+        GeneratorType::ATTACK_MODULATION_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::HOLD_MODULATION_ENVELOPE => Some((-12000, 5000)),
+        GeneratorType::DECAY_MODULATION_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::SUSTAIN_MODULATION_ENVELOPE => Some((0, 1000)),
+        GeneratorType::RELEASE_MODULATION_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::KEY_NUMBER_TO_MODULATION_ENVELOPE_HOLD => Some((-1200, 1200)),
+        GeneratorType::KEY_NUMBER_TO_MODULATION_ENVELOPE_DECAY => Some((-1200, 1200)),
+        GeneratorType::DELAY_VOLUME_ENVELOPE => Some((-12000, 5000)),
+        GeneratorType::ATTACK_VOLUME_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::HOLD_VOLUME_ENVELOPE => Some((-12000, 5000)),
+        GeneratorType::DECAY_VOLUME_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::SUSTAIN_VOLUME_ENVELOPE => Some((0, 1440)),
+        GeneratorType::RELEASE_VOLUME_ENVELOPE => Some((-12000, 8000)),
+        GeneratorType::KEY_NUMBER_TO_VOLUME_ENVELOPE_HOLD => Some((-1200, 1200)),
+        GeneratorType::KEY_NUMBER_TO_VOLUME_ENVELOPE_DECAY => Some((-1200, 1200)),
         GeneratorType::INITIAL_ATTENUATION => Some((0, 1440)),
+        GeneratorType::SCALE_TUNING => Some((0, 1200)),
         _ => None,
     }
 }
