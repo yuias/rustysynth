@@ -172,6 +172,15 @@ impl MidiFile {
         let track_count = BinaryReader::read_i16_big_endian(reader)? as i32;
         let division = BinaryReader::read_i16_big_endian(reader)?;
 
+        // Either resolution reaching zero would make every delta time infinite or NaN, and
+        // there is no sensible resolution to substitute, so the header is rejected. fps needs
+        // no guard: a negative division means a negative fps_code, so fps is at least 1.
+        if division == 0 || (division < 0 && division.to_be_bytes()[1] == 0) {
+            return Err(MidiFileError::InvalidChunkData(FourCC::from_bytes(
+                *b"MThd",
+            )));
+        }
+
         // A negative division means SMPTE time code: the high byte (as a signed
         // value) is the negated frames-per-second, and the low byte is the
         // number of ticks per frame. Positive division is the usual
@@ -615,6 +624,26 @@ mod tests {
             .messages
             .iter()
             .any(|message| matches!(message, Message::Normal { status: 0xFF, .. })));
+    }
+
+    #[test]
+    fn zero_ticks_per_quarter_note_is_rejected() {
+        let track = vec![0x00, 0x90, 0x3C, 0x64];
+        assert!(matches!(
+            parse(0, track),
+            Err(MidiFileError::InvalidChunkData(_))
+        ));
+    }
+
+    #[test]
+    fn zero_smpte_ticks_per_frame_is_rejected() {
+        // -25 fps, 0 ticks/frame: a tick would be an infinite number of seconds.
+        let division = i16::from_be_bytes([0xE7, 0x00]);
+        let track = vec![0x00, 0x90, 0x3C, 0x64];
+        assert!(matches!(
+            parse(division, track),
+            Err(MidiFileError::InvalidChunkData(_))
+        ));
     }
 
     #[test]
