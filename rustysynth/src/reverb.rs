@@ -112,10 +112,7 @@ impl Reverb {
             room_size: 0.0,
         };
 
-        reverb.set_wet(Self::INITIAL_WET);
-        reverb.set_room_size(Self::INITIAL_ROOM);
-        reverb.set_damp(Self::INITIAL_DAMP);
-        reverb.set_width(Self::INITIAL_WIDTH);
+        reverb.reset_params();
 
         reverb
     }
@@ -241,6 +238,15 @@ impl Reverb {
 
     pub fn get_input_gain(&self) -> f32 {
         self.input_gain
+    }
+
+    /// Restores the parameters a host or a GS reverb macro may have changed to the
+    /// library defaults.
+    pub(crate) fn reset_params(&mut self) {
+        self.set_wet(Self::INITIAL_WET);
+        self.set_room_size(Self::INITIAL_ROOM);
+        self.set_damp(Self::INITIAL_DAMP);
+        self.set_width(Self::INITIAL_WIDTH);
     }
 
     pub(crate) fn set_room_size(&mut self, value: f32) {

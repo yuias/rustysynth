@@ -44,6 +44,12 @@ impl Chorus {
         (0.002, 0.0008, 0.2, 0.7), // Type 5: Flanger
     ];
 
+    /// Default parameters, used when no chorus type or macro has been selected.
+    pub(crate) const DEFAULT_DELAY: f64 = 0.002;
+    pub(crate) const DEFAULT_DEPTH: f64 = 0.0019;
+    pub(crate) const DEFAULT_RATE: f64 = 0.4;
+    const DEFAULT_FEEDBACK: f64 = 0.0;
+
     pub(crate) fn new(sample_rate: i32, delay: f64, depth: f64, frequency: f64) -> Self {
         let mut chorus = Self {
             buffer_l: Vec::new(),
@@ -190,6 +196,18 @@ impl Chorus {
             (quarter + third) % delay_table_length,
             (quarter + 2 * third) % delay_table_length,
         ];
+    }
+
+    /// Restores the parameters a host or a GS chorus macro may have changed to the
+    /// library defaults.
+    pub(crate) fn reset_params(&mut self) {
+        self.set_params_with_feedback(
+            self.sample_rate,
+            Self::DEFAULT_DELAY,
+            Self::DEFAULT_DEPTH,
+            Self::DEFAULT_RATE,
+            Self::DEFAULT_FEEDBACK,
+        );
     }
 
     /// Select a GM chorus type preset (0-5).

@@ -492,6 +492,9 @@ impl Synthesizer {
     }
 
     /// Resets the synthesizer.
+    ///
+    /// The reverb and chorus parameters are kept, whether they were set through the API or
+    /// by a GS effect macro; use `reset_effect_parameters` to restore their defaults.
     pub fn reset(&mut self) {
         self.voices.clear();
 
@@ -522,13 +525,28 @@ impl Synthesizer {
     }
 
     /// Handles GM/GS/XG system reset messages. Unlike `reset()`, this also restores the
-    /// default drum channel assignment and selects the system mode the message defines.
+    /// default drum channel assignment and the default effect parameters, and selects the
+    /// system mode the message defines.
     fn reset_system(&mut self, mode: SystemMode) {
         for (i, channel) in self.channels.iter_mut().enumerate() {
             channel.set_percussion_channel(i == Synthesizer::PERCUSSION_CHANNEL);
         }
         self.reset();
+        self.reset_effect_parameters();
         self.set_system_mode(mode);
+    }
+
+    /// Restores the reverb and chorus parameters to the library defaults.
+    ///
+    /// `reset()` keeps whatever reverb and chorus parameters are in effect, so that a host
+    /// configuring them through the API is not overridden. Call this when a new song should
+    /// start from the defaults instead, for example after switching files; the GM/GS/XG
+    /// system reset messages do it themselves.
+    pub fn reset_effect_parameters(&mut self) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.reverb.reset_params();
+            effects.chorus.reset_params();
+        }
     }
 
     /// Renders the waveform.
@@ -756,6 +774,9 @@ impl Synthesizer {
     /// - Yamaha XG, device IDs 10h-1Fh (43 1n 4C ...):
     ///   - XG System On (00 00 7E 00) → reset
     ///   - XG Part Mode (08 pp 07 vv) → sets/clears the percussion flag of MIDI channel pp
+    ///
+    /// The reset messages go further than `reset()`: they also restore channel 10 as the
+    /// only drum channel and restore the default reverb and chorus parameters.
     ///
     /// The data slice should NOT include the leading F0 or trailing F7.
     pub fn process_sysex(&mut self, data: &[u8]) {
@@ -1254,7 +1275,12 @@ impl Effects {
             reverb_input: vec![0_f32; settings.block_size],
             reverb_output_left: vec![0_f32; settings.block_size],
             reverb_output_right: vec![0_f32; settings.block_size],
-            chorus: Chorus::new(settings.sample_rate, 0.002, 0.0019, 0.4),
+            chorus: Chorus::new(
+                settings.sample_rate,
+                Chorus::DEFAULT_DELAY,
+                Chorus::DEFAULT_DEPTH,
+                Chorus::DEFAULT_RATE,
+            ),
             chorus_input_left: vec![0_f32; settings.block_size],
             chorus_input_right: vec![0_f32; settings.block_size],
             chorus_output_left: vec![0_f32; settings.block_size],
@@ -1582,6 +1608,58 @@ mod tests {
         assert_mode_pushed(&synthesizer, SystemMode::Xg);
         synthesizer.reset();
         assert_mode_pushed(&synthesizer, SystemMode::Gm);
+    }
+
+    #[test]
+    fn gs_system_reset_restores_effect_defaults_but_plain_reset_keeps_them() {
+        let settings = SynthesizerSettings::new(44100);
+        let mut synthesizer = Synthesizer::new(&sine_soundfont(), &settings).unwrap();
+
+        let tweak = |synthesizer: &mut Synthesizer| {
+            // Reverb Macro 0 (Room 1), Reverb Level 0 and Chorus Macro 7 (Short Delay FB).
+            synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x30, 0x00, 0x0F]);
+            synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x33, 0x00, 0x0C]);
+            synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x38, 0x07, 0x00]);
+        };
+
+        let assert_tweaked = |synthesizer: &Synthesizer| {
+            let effects = synthesizer.effects.as_ref().unwrap();
+            assert_eq!(effects.reverb.get_room_size(), GS_REVERB_MACROS[0].0);
+            assert_eq!(effects.reverb.get_damp(), GS_REVERB_MACROS[0].1);
+            assert_eq!(effects.reverb.get_width(), GS_REVERB_MACROS[0].2);
+            assert_eq!(effects.reverb.get_wet(), 0.0);
+            assert_eq!(effects.chorus.get_feedback(), 0.5);
+        };
+
+        let assert_defaults = |synthesizer: &Synthesizer| {
+            let effects = synthesizer.effects.as_ref().unwrap();
+            let reference = Reverb::new(settings.sample_rate);
+            assert_eq!(effects.reverb.get_room_size(), reference.get_room_size());
+            assert_eq!(effects.reverb.get_damp(), reference.get_damp());
+            assert_eq!(effects.reverb.get_width(), reference.get_width());
+            assert_eq!(effects.reverb.get_wet(), reference.get_wet());
+            assert_eq!(effects.chorus.get_delay(), Chorus::DEFAULT_DELAY);
+            assert_eq!(effects.chorus.get_feedback(), 0.0);
+        };
+
+        tweak(&mut synthesizer);
+        assert_tweaked(&synthesizer);
+
+        // `reset()` leaves the parameters alone, so a host configuring them is not overridden.
+        synthesizer.reset();
+        assert_tweaked(&synthesizer);
+
+        synthesizer.process_sysex(&[0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41]);
+        assert_defaults(&synthesizer);
+
+        // The same holds for GM System On and XG System On.
+        tweak(&mut synthesizer);
+        synthesizer.process_sysex(&[0x7E, 0x7F, 0x09, 0x01]);
+        assert_defaults(&synthesizer);
+
+        tweak(&mut synthesizer);
+        synthesizer.process_sysex(&[0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00]);
+        assert_defaults(&synthesizer);
     }
 
     #[test]
